@@ -1,5 +1,6 @@
 #include "nvme_wrapper.h"
 #include "xcopy_tool.h"
+#include "xcopy_cmd.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -462,6 +463,15 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
             ioctl_cmd.addr = (__u64)(uintptr_t)data;
         }
         ioctl_cmd.data_len = data_len;
+        
+        // Debug: Print first range descriptor from data buffer (only once)
+        static int range_data_debug_logged = 0;
+        if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
+            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)data;
+            fprintf(stderr, "DEBUG: Range descriptor in data buffer: src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
+                    first_range->src_nsid, first_range->src_lba, first_range->num_blocks, first_range->dst_lba);
+            range_data_debug_logged = 1;
+        }
     } else {
         ioctl_cmd.addr = 0;
         ioctl_cmd.data_len = 0;
@@ -489,6 +499,9 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     if (debug_count < 3) {
         fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, ns_fd=%d, data_len=%u, addr=%p\n",
                 ioctl_cmd.opcode, ioctl_cmd.nsid, ns_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
+        fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
+                ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
+                ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
         debug_count++;
     }
     
