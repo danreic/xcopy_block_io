@@ -146,6 +146,7 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
                             p = end + 1;
                         } else {
                             strncpy(info->traddr, p, sizeof(info->traddr) - 1);
+                            info->traddr[sizeof(info->traddr) - 1] = '\0';
                             p += strlen(p);
                         }
                     } else if (strncmp(p, "trsvcid=", 8) == 0) {
@@ -160,6 +161,7 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
                             p = end + 1;
                         } else {
                             strncpy(info->trsvcid, p, sizeof(info->trsvcid) - 1);
+                            info->trsvcid[sizeof(info->trsvcid) - 1] = '\0';
                             p += strlen(p);
                         }
                     } else if (strncmp(p, "subsysnqn=", 10) == 0) {
@@ -174,6 +176,7 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
                             p = end + 1;
                         } else {
                             strncpy(info->subnqn, p, sizeof(info->subnqn) - 1);
+                            info->subnqn[sizeof(info->subnqn) - 1] = '\0';
                             p += strlen(p);
                         }
                     } else {
@@ -185,6 +188,18 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
                             break;
                         }
                     }
+                }
+            }
+            
+            // Also try reading subnqn from separate sysfs file if not found in address
+            // Some systems store it in /sys/class/nvme/nvmeX/subsysnqn
+            if (strlen(info->subnqn) == 0) {
+                char subsysnqn_path[512];
+                snprintf(subsysnqn_path, sizeof(subsysnqn_path), "%s/subsysnqn", controller_path);
+                if (read_sysfs_file(subsysnqn_path, info->subnqn, sizeof(info->subnqn)) != 0) {
+                    // Try alternative path: /sys/class/nvme/nvmeX/device/subsysnqn
+                    snprintf(subsysnqn_path, sizeof(subsysnqn_path), "%s/device/subsysnqn", controller_path);
+                    read_sysfs_file(subsysnqn_path, info->subnqn, sizeof(info->subnqn));
                 }
             }
         } else if (strcmp(info->transport_type, "pcie") == 0 || strcmp(info->transport_type, "PCIe") == 0) {

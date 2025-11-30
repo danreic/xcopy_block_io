@@ -232,6 +232,14 @@ static int parse_args(int argc, char **argv, struct xcopy_config *config) {
                 auto_subnqn[sizeof(auto_subnqn) - 1] = '\0';
                 config->subnqn = auto_subnqn;
             }
+            
+            // Debug output if verbose and subnqn is missing
+            if (config->verbose && !config->subnqn && 
+                (strcmp(config->transport_type, "tcp") == 0 || strcmp(config->transport_type, "rdma") == 0)) {
+                fprintf(stderr, "Warning: Subsystem NQN not found in sysfs for device %s\n", config->src_device);
+                fprintf(stderr, "  Tried reading from: /sys/class/nvme/nvme%u/address and /sys/class/nvme/nvme%u/subsysnqn\n",
+                        src_info.controller_id, src_info.controller_id);
+            }
         }
         
         if (config->dst_device) {
