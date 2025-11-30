@@ -9,6 +9,7 @@
 // Probe callback for controller attachment
 static bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
                      struct spdk_nvme_ctrlr_opts *opts) {
+    (void)opts;  // Unused parameter
     struct spdk_context *ctx = (struct spdk_context *)cb_ctx;
     
     // Copy transport ID for later use
@@ -21,6 +22,8 @@ static bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 static void attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
                       struct spdk_nvme_ctrlr *ctrlr,
                       const struct spdk_nvme_ctrlr_opts *opts) {
+    (void)trid;  // Unused parameter
+    (void)opts;  // Unused parameter
     struct spdk_context *ctx = (struct spdk_context *)cb_ctx;
     ctx->ctrlr = ctrlr;
 }
@@ -78,9 +81,11 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
             if (transport->subnqn) {
                 snprintf(ctx->trid.subnqn, sizeof(ctx->trid.subnqn), "%s", transport->subnqn);
             }
-            if (transport->hostnqn) {
-                snprintf(ctx->trid.hostnqn, sizeof(ctx->trid.hostnqn), "%s", transport->hostnqn);
-            }
+            // hostnqn may not be available in all SPDK versions
+            // It's optional and can be set via environment variable SPDK_NVME_HOSTNQN instead
+            // if (transport->hostnqn) {
+            //     snprintf(ctx->trid.hostnqn, sizeof(ctx->trid.hostnqn), "%s", transport->hostnqn);
+            // }
             break;
             
         case XCOPY_TRANSPORT_RDMA:

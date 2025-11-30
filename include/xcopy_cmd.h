@@ -5,6 +5,9 @@
 #include <stdbool.h>
 #include <spdk/nvme.h>
 
+// Maximum number of ranges per NVMe Copy command
+#define MAX_COPY_RANGES 16
+
 // NVMe Copy command opcode
 #define NVME_OPC_COPY 0x19
 
