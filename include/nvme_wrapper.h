@@ -47,8 +47,14 @@ int nvme_wrapper_init(struct nvme_context *ctx,
                      struct xcopy_transport_config *transport);
 
 // Connect to NVMe controller
+// If device_path is provided in transport config, use existing device
+// Otherwise, connect to the target using transport info
 int nvme_wrapper_connect(struct nvme_context *ctx,
                         struct xcopy_transport_config *transport);
+
+// Connect using existing device path (e.g., /dev/nvme1n1 -> /dev/nvme1)
+int nvme_wrapper_connect_device(struct nvme_context *ctx,
+                                const char *device_path);
 
 // Get controller file descriptor
 int nvme_wrapper_get_ctrl_fd(struct nvme_context *ctx);

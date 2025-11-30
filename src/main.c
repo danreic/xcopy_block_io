@@ -327,10 +327,20 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    if (nvme_wrapper_connect(&nvme_ctx, &transport) != 0) {
-        fprintf(stderr, "Failed to connect to NVMe controller\n");
-        nvme_wrapper_cleanup(&nvme_ctx);
-        return 1;
+    // If device path is provided, use existing device
+    // Otherwise, connect to target
+    if (config.src_device) {
+        if (nvme_wrapper_connect_device(&nvme_ctx, config.src_device) != 0) {
+            fprintf(stderr, "Failed to connect to existing device %s\n", config.src_device);
+            nvme_wrapper_cleanup(&nvme_ctx);
+            return 1;
+        }
+    } else {
+        if (nvme_wrapper_connect(&nvme_ctx, &transport) != 0) {
+            fprintf(stderr, "Failed to connect to NVMe controller\n");
+            nvme_wrapper_cleanup(&nvme_ctx);
+            return 1;
+        }
     }
     
     int ctrl_fd = nvme_wrapper_get_ctrl_fd(&nvme_ctx);

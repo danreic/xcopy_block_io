@@ -35,6 +35,143 @@ int nvme_wrapper_init(struct nvme_context *ctx,
     return 0;
 }
 
+// Helper function to extract controller path from namespace path
+// /dev/nvme1n1 -> /dev/nvme1
+static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t len) {
+    if (!ns_path || !ctrl_path || len == 0) {
+        return -1;
+    }
+    
+    const char *basename = strrchr(ns_path, '/');
+    if (!basename) {
+        basename = ns_path;
+    } else {
+        basename++;
+    }
+    
+    // Find 'n' that separates controller from namespace
+    const char *n_pos = strchr(basename, 'n');
+    if (!n_pos || n_pos == basename) {
+        return -1;
+    }
+    
+    // Extract controller part: /dev/nvme1
+    size_t ctrl_len = n_pos - basename;
+    if (snprintf(ctrl_path, len, "/dev/%.*s", (int)ctrl_len, basename) >= (int)len) {
+        return -1;
+    }
+    
+    return 0;
+}
+
+int nvme_wrapper_connect_device(struct nvme_context *ctx,
+                                const char *device_path) {
+    if (!ctx || !device_path || !ctx->initialized) {
+        return -EINVAL;
+    }
+    
+    if (ctx->connected) {
+        return 0;
+    }
+    
+    // Extract controller path from namespace path
+    // e.g., /dev/nvme1n1 -> /dev/nvme1
+    char ctrl_path[64];
+    if (extract_controller_path(device_path, ctrl_path, sizeof(ctrl_path)) != 0) {
+        fprintf(stderr, "Error: Invalid device path format: %s\n", device_path);
+        fprintf(stderr, "  Expected format: /dev/nvmeXnY (e.g., /dev/nvme1n1)\n");
+        return -1;
+    }
+    
+    // Check if controller device exists
+    if (access(ctrl_path, F_OK) != 0) {
+        fprintf(stderr, "Error: Controller device %s does not exist\n", ctrl_path);
+        return -1;
+    }
+    
+    // Open the controller device
+    ctx->ctrl_fd = open(ctrl_path, O_RDWR);
+    if (ctx->ctrl_fd < 0) {
+        fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
+                ctrl_path, strerror(errno));
+        return -1;
+    }
+    
+    strncpy(ctx->device_path, ctrl_path, sizeof(ctx->device_path) - 1);
+    ctx->device_path[sizeof(ctx->device_path) - 1] = '\0';
+    
+    // Enumerate namespaces (same code as below)
+    ctx->num_ns = 0;
+    for (uint32_t nsid = 1; nsid <= 256; nsid++) {
+        char ns_path[64];
+        snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
+                 (int)(sizeof(ns_path) - 10), ctx->device_path, nsid);
+        
+        int ns_fd = open(ns_path, O_RDONLY);
+        if (ns_fd < 0) {
+            break;
+        }
+        
+        // Get namespace size using ioctl
+        struct nvme_id_ns ns_id;
+        struct nvme_passthru_cmd admin_cmd = {
+            .opcode = 0x06,  // NVME_ADMIN_IDENTIFY
+            .flags = 0,
+            .rsvd1 = 0,
+            .nsid = nsid,
+            .cdw2 = 0,
+            .cdw3 = 0,
+            .metadata = 0,
+            .addr = (__u64)(uintptr_t)&ns_id,
+            .metadata_len = 0,
+            .data_len = sizeof(ns_id),
+            .cdw10 = 0,
+            .cdw11 = 0,
+            .cdw12 = 0,
+            .cdw13 = 0,
+            .cdw14 = 0,
+            .cdw15 = 0,
+            .timeout_ms = 0,
+            .result = 0,
+        };
+        
+        if (ioctl(ctx->ctrl_fd, NVME_IOCTL_ADMIN_CMD, &admin_cmd) == 0) {
+            if (ctx->num_ns >= ctx->ns_capacity) {
+                uint32_t new_capacity = ctx->ns_capacity * 2;
+                struct nvme_ns_info *new_list = realloc(ctx->ns_list, 
+                                                        new_capacity * sizeof(struct nvme_ns_info));
+                if (!new_list) {
+                    close(ns_fd);
+                    break;
+                }
+                ctx->ns_list = new_list;
+                ctx->ns_capacity = new_capacity;
+            }
+            
+            uint64_t nsze_le;
+            memcpy(&nsze_le, &ns_id.nsze, sizeof(nsze_le));
+            uint64_t nsze = le64toh(nsze_le);
+            uint32_t lbaf = ns_id.flbas & 0xf;
+            uint32_t lba_size = 1 << ns_id.lbaf[lbaf].ds;
+            
+            ctx->ns_list[ctx->num_ns].nsid = nsid;
+            ctx->ns_list[ctx->num_ns].size_blocks = nsze;
+            ctx->ns_list[ctx->num_ns].block_size = lba_size;
+            ctx->ns_list[ctx->num_ns].fd = ns_fd;
+            ctx->num_ns++;
+        } else {
+            close(ns_fd);
+        }
+    }
+    
+    if (ctx->num_ns == 0) {
+        fprintf(stderr, "Warning: No namespaces found on controller\n");
+    }
+    
+    ctx->connected = true;
+    return 0;
+}
+
 int nvme_wrapper_connect(struct nvme_context *ctx,
                         struct xcopy_transport_config *transport) {
     if (!ctx || !transport || !ctx->initialized) {
