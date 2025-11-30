@@ -35,7 +35,9 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 # spdk_key functions are in spdk_keyring, not a separate library
 # Link order matters: libspdk_log should come before libspdk_env_dpdk
 # as it may provide rte_log functions that env_dpdk needs
+# For TCP transport support, we need: spdk_nvme_tcp, spdk_sock, spdk_sock_posix
 SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
+            -lspdk_nvme_tcp -lspdk_sock -lspdk_sock_posix \
             -lspdk_util -lspdk_ioat \
             -lspdk_accel -lspdk_thread -lspdk_trace \
             -lspdk_keyring -lspdk_json
@@ -72,6 +74,7 @@ LIBS = -Wl,-Bstatic \
        -lspdk_env_dpdk \
        -Wl,--no-whole-archive \
        -lspdk_log -lspdk_nvme \
+       -lspdk_nvme_tcp -lspdk_sock -lspdk_sock_posix \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
        -lspdk_keyring -lspdk_json \
@@ -104,6 +107,15 @@ all: $(TARGET)
 check-spdk-libs:
 	@echo "Checking SPDK libraries in $(SPDK_LIB):"
 	@ls -1 $(SPDK_LIB)/libspdk*.a 2>/dev/null | sed 's|.*/lib||; s|\.a$$||' | sort || echo "No libraries found"
+	@echo ""
+	@echo "Checking for TCP transport libraries:"
+	@for lib in spdk_nvme_tcp spdk_sock spdk_sock_posix; do \
+		if [ -f "$(SPDK_LIB)/lib$$lib.a" ]; then \
+			echo "  ✓ lib$$lib.a found"; \
+		else \
+			echo "  ✗ lib$$lib.a NOT found"; \
+		fi \
+	done
 
 # Check if libspdk_env_dpdk provides rte_log (for debugging)
 check-rte-log:
