@@ -55,16 +55,17 @@ DPDK_LIBS = -Wl,-Bstatic \
 SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
 
 # Link order is critical:
-# Put ALL libraries (DPDK and SPDK) in the SAME group to handle circular dependencies
+# Put ALL libraries (SPDK and DPDK) in the SAME group to handle circular dependencies
+# SPDK libraries come FIRST so rte_log is available when DPDK libraries are processed
 # DPDK libraries need rte_log (provided by SPDK), SPDK env_dpdk needs DPDK functions
 # The linker will iterate through all libraries in the group until all symbols are resolved
 # System libraries go last (outside the group, dynamic)
 LIBS = -Wl,-Bstatic \
        -Wl,--start-group \
+       $(SPDK_LIBS) \
        -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
        -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer -lrte_telemetry \
-       $(SPDK_LIBS) \
        -Wl,--end-group \
        -Wl,-Bdynamic \
        $(SYSTEM_LIBS)
