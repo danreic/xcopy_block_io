@@ -21,7 +21,8 @@ DPDK_LIB = $(shell if [ -d "$(DPDK_ROOT)/build/lib" ]; then echo "$(DPDK_ROOT)/b
 INCLUDES = -I$(SPDK_INC) -I$(DPDK_INC) -Iinclude
 
 # Library paths and libraries
-LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
+# Check both build/lib and /usr/local/lib64 for DPDK libraries
+LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 
 # SPDK libraries - need many more dependencies
 # Some libraries may not exist in all SPDK builds, removed missing ones
@@ -36,11 +37,15 @@ SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
 # DPDK libraries
 # If DPDK is built as static libraries, we need to link statically
 # Use -Bstatic to force static linking for DPDK libraries
+# Use --start-group and --end-group to handle circular dependencies
+# Note: rte_log functions are in librte_eal, rte_pci_* in librte_bus_pci
 DPDK_LIBS = -Wl,-Bstatic \
+            -Wl,--start-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
             -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer \
             -lrte_telemetry \
+            -Wl,--end-group \
             -Wl,-Bdynamic
 
 # System libraries (OpenSSL for crypto, etc.)
@@ -73,11 +78,10 @@ check-spdk-libs:
 
 # Build the main executable
 # Add rpath so the binary can find libraries at runtime
-# Use $ORIGIN to make rpath relative, or absolute paths
 $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
 		-Wl,--as-needed \
-		-Wl,-rpath,$(SPDK_LIB):$(DPDK_LIB):/usr/local/lib \
+		-Wl,-rpath,$(SPDK_LIB):$(DPDK_LIB):/usr/local/lib:/usr/local/lib64 \
 		-Wl,--disable-new-dtags
 
 # Compile source files
