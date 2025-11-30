@@ -195,6 +195,7 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
             if (read_sysfs_file(addr_path, address, sizeof(address)) == 0) {
                 // PCIe address format: 0000:01:00.0
                 strncpy(info->traddr, address, sizeof(info->traddr) - 1);
+                info->traddr[sizeof(info->traddr) - 1] = '\0';
             }
         }
     } else {

@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include "concurrency_manager.h"
 #include "xcopy_cmd.h"
 #include "statistics.h"

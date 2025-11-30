@@ -44,12 +44,12 @@ SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
 # If DPDK is built as static libraries, we need to link statically
 # Use -Bstatic to force static linking for DPDK libraries
 # Use --start-group and --end-group to handle circular dependencies
-# Note: rte_log functions should be provided by SPDK's env_dpdk
+# Note: rte_log must come early as other DPDK libraries depend on it
 # rte_malloc, rte_memzone functions are in librte_eal, not separate libraries
 # rte_intr functions might be in librte_eal or a separate library
 DPDK_LIBS = -Wl,-Bstatic \
             -Wl,--start-group \
-            -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+            -lrte_log -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
             -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer \
             -lrte_telemetry \
@@ -75,7 +75,7 @@ LIBS = -Wl,-Bstatic \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
        -lspdk_keyring -lspdk_json \
-       -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+       -lrte_log -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
        -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer -lrte_telemetry \
        -Wl,--end-group \
