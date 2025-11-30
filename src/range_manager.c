@@ -32,6 +32,14 @@ int range_generator_next(struct range_generator *gen,
         return -EINVAL;
     }
     
+    // Debug: Print generator state (only first few times)
+    static int debug_count = 0;
+    if (debug_count < 3) {
+        fprintf(stderr, "DEBUG: range_generator_next: current_range=%u, num_ranges=%u, range_size=%lu\n",
+                gen->current_range, gen->workload.num_ranges, gen->workload.range_size);
+        debug_count++;
+    }
+    
     if (gen->current_range >= gen->workload.num_ranges) {
         *num_ranges = 0;
         return 0; // No more ranges
