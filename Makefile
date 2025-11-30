@@ -38,7 +38,9 @@ SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
 # If DPDK is built as static libraries, we need to link statically
 # Use -Bstatic to force static linking for DPDK libraries
 # Use --start-group and --end-group to handle circular dependencies
-# Note: rte_log functions are in librte_eal, rte_pci_* in librte_bus_pci
+# Note: rte_log functions should be provided by SPDK's env_dpdk
+# rte_pci_* functions are in librte_pci (must come before librte_bus_pci)
+# Order matters: librte_pci must come before librte_bus_pci
 DPDK_LIBS = -Wl,-Bstatic \
             -Wl,--start-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
@@ -51,7 +53,11 @@ DPDK_LIBS = -Wl,-Bstatic \
 # System libraries (OpenSSL for crypto, etc.)
 SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
 
-LIBS = $(SPDK_LIBS) $(DPDK_LIBS) $(SYSTEM_LIBS)
+# Link order is critical:
+# 1. DPDK libraries first (they need rte_log which SPDK provides)
+# 2. SPDK libraries second (libspdk_env_dpdk provides rte_log for DPDK)
+# 3. System libraries last
+LIBS = $(DPDK_LIBS) $(SPDK_LIBS) $(SYSTEM_LIBS)
 
 # Source files
 SRCDIR = src
