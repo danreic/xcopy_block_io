@@ -27,10 +27,11 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
 # Some libraries may not exist in all SPDK builds, removed missing ones
 # Note: spdk_keyring requires spdk_json, and spdk_nvme requires both for authentication
 # spdk_key functions are in spdk_keyring, not a separate library
+# Link order matters: dependencies must come after the libraries that use them
 SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
             -lspdk_util -lspdk_ioat \
             -lspdk_accel -lspdk_thread -lspdk_trace \
-            -lspdk_json -lspdk_keyring
+            -lspdk_keyring -lspdk_json
 
 # DPDK libraries
 DPDK_LIBS = -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
@@ -61,9 +62,14 @@ TARGET = xcopy_tool
 # Default target
 all: $(TARGET)
 
+# Check which SPDK libraries exist (for debugging)
+check-spdk-libs:
+	@echo "Checking SPDK libraries in $(SPDK_LIB):"
+	@ls -1 $(SPDK_LIB)/libspdk*.a 2>/dev/null | sed 's|.*/lib||; s|\.a$$||' | sort || echo "No libraries found"
+
 # Build the main executable
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) -Wl,--no-as-needed
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) -Wl,--as-needed
 
 # Compile source files
 %.o: %.c
