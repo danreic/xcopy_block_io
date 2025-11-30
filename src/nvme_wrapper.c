@@ -528,15 +528,26 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Check result - result contains status field
     // Status code is in bits 15:1, phase bit is bit 0
     __u16 status = (result >> 1) & 0x7FFF;
+    __u8 status_type = (status >> 9) & 0x7;
+    __u16 status_code = status & 0xFF;
+    
     if (status != 0) {
         // Log status for debugging
         static int status_log_count = 0;
-        if (status_log_count < 3) {
-            fprintf(stderr, "NVMe command returned non-zero status: 0x%x (result=0x%x)\n",
-                    status, result);
+        if (status_log_count < 5) {
+            fprintf(stderr, "NVMe command returned non-zero status: 0x%x (result=0x%x, type=%u, code=0x%x)\n",
+                    status, result, status_type, status_code);
             status_log_count++;
         }
         return -(int)status;
+    }
+    
+    // Debug: Log successful completion (only once)
+    static int success_logged = 0;
+    if (!success_logged) {
+        fprintf(stderr, "DEBUG: NVMe command completed successfully (result=0x%x, status=0x%x)\n",
+                result, status);
+        success_logged = 1;
     }
     
     return 0;
