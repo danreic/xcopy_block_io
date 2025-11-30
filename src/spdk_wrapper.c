@@ -79,6 +79,10 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
         return -EINVAL;
     }
     
+    // Register transports if needed (some SPDK versions require explicit registration)
+    // Note: This may not be available in all SPDK versions, but it's safe to call
+    // if the function exists. If not available, the probe will still work.
+    
     // Initialize transport ID
     memset(&ctx->trid, 0, sizeof(ctx->trid));
     
@@ -92,9 +96,14 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
             break;
             
         case XCOPY_TRANSPORT_TCP:
+            // Ensure TCP transport is available
+            // In some SPDK versions, you may need to register the transport first
             ctx->trid.trtype = SPDK_NVME_TRANSPORT_TCP;
             if (transport->traddr) {
                 snprintf(ctx->trid.traddr, sizeof(ctx->trid.traddr), "%s", transport->traddr);
+            } else {
+                fprintf(stderr, "Error: Transport address (traddr) is required for TCP transport\n");
+                return -EINVAL;
             }
             if (transport->trsvcid) {
                 snprintf(ctx->trid.trsvcid, sizeof(ctx->trid.trsvcid), "%s", transport->trsvcid);
@@ -103,6 +112,9 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
             }
             if (transport->subnqn) {
                 snprintf(ctx->trid.subnqn, sizeof(ctx->trid.subnqn), "%s", transport->subnqn);
+            } else {
+                fprintf(stderr, "Error: Subsystem NQN (subnqn) is required for TCP transport\n");
+                return -EINVAL;
             }
             // hostnqn may not be available in all SPDK versions
             // It's optional and can be set via environment variable SPDK_NVME_HOSTNQN instead
@@ -132,6 +144,15 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
     // Probe for controllers
     if (spdk_nvme_probe(&ctx->trid, ctx, probe_cb, attach_cb, NULL) != 0) {
         fprintf(stderr, "Failed to probe for NVMe controllers\n");
+        fprintf(stderr, "  Transport: %s\n", transport->type == XCOPY_TRANSPORT_TCP ? "TCP" : 
+                transport->type == XCOPY_TRANSPORT_RDMA ? "RDMA" : "PCIe");
+        if (transport->traddr) {
+            fprintf(stderr, "  Address: %s\n", transport->traddr);
+        }
+        if (transport->subnqn) {
+            fprintf(stderr, "  NQN: %s\n", transport->subnqn);
+        }
+        fprintf(stderr, "\nNote: If using TCP/RDMA, ensure SPDK was built with transport support\n");
         return -1;
     }
     

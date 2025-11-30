@@ -96,6 +96,7 @@ static int parse_args(int argc, char **argv, struct xcopy_config *config) {
     };
     
     // Set defaults
+    // Default to TCP (will be overridden if device paths are provided and transport is detected)
     config->transport_type = "tcp";
     config->traddr = NULL;
     config->trsvcid = "4420";
@@ -202,9 +203,18 @@ static int parse_args(int argc, char **argv, struct xcopy_config *config) {
             config->src_nsid = src_info.namespace_id;
             
             // Use transport info from source device if not manually specified
+            // Always use detected transport type when device path is provided
             if (strlen(src_info.transport_type) > 0) {
                 strncpy(auto_transport_type, src_info.transport_type, sizeof(auto_transport_type) - 1);
                 auto_transport_type[sizeof(auto_transport_type) - 1] = '\0';
+                // Normalize transport type (handle case variations)
+                if (strcasecmp(auto_transport_type, "PCIe") == 0) {
+                    strcpy(auto_transport_type, "pcie");
+                }
+                config->transport_type = auto_transport_type;
+            } else {
+                // If transport detection failed, default to PCIe for local devices
+                strcpy(auto_transport_type, "pcie");
                 config->transport_type = auto_transport_type;
             }
             if (!config->traddr && strlen(src_info.traddr) > 0) {
@@ -291,6 +301,16 @@ int main(int argc, char **argv) {
     // Initialize SPDK
     if (config.verbose) {
         printf("Initializing SPDK...\n");
+        printf("Transport type: %s\n", config.transport_type);
+        if (config.traddr) {
+            printf("Transport address: %s\n", config.traddr);
+        }
+        if (config.trsvcid) {
+            printf("Transport service ID: %s\n", config.trsvcid);
+        }
+        if (config.subnqn) {
+            printf("Subsystem NQN: %s\n", config.subnqn);
+        }
     }
     
     if (spdk_wrapper_init(&spdk_ctx, &transport) != 0) {

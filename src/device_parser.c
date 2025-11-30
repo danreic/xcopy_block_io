@@ -188,6 +188,8 @@ int device_parser_read_transport(const char *device_path, struct device_info *in
                 }
             }
         } else if (strcmp(info->transport_type, "pcie") == 0 || strcmp(info->transport_type, "PCIe") == 0) {
+            // Normalize to lowercase
+            strcpy(info->transport_type, "pcie");
             // For PCIe, read PCI address
             char addr_path[512];
             snprintf(addr_path, sizeof(addr_path), "%s/address", controller_path);
