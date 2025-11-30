@@ -28,6 +28,7 @@ struct pending_op {
 // Extended context with thread pool
 struct io_uring_nvme_ctx_ext {
     struct io_uring ring;
+    struct io_uring_nvme_ctx *ctx;  // Pointer back to the public ctx for lookup
     bool initialized;
     uint32_t queue_depth;
     int registry_index;  // Index in registry
@@ -186,49 +187,17 @@ int io_uring_nvme_init(struct io_uring_nvme_ctx *ctx, uint32_t queue_depth) {
         }
     }
     
-    // Store extended context pointer in the ring's user_data
-    // We'll use a hack: store pointer after the ring structure
-    memcpy(ctx, ext, sizeof(struct io_uring));
-    ctx->initialized = true;
-    
-    // Store extended context pointer (we'll need to access it later)
-    // For now, we'll use a global registry or store it differently
-    // Actually, let's change the approach: make ctx point to ext
-    // But that changes the API... Let me use a different approach
-    
-    // Store extended context in a way we can retrieve it
-    // We'll use the fact that we can store user data
-    // Actually, the simplest is to change the struct to include the ext pointer
-    // But that changes the header... Let me use a static registry instead
-    
     ext->initialized = true;
     
+    // Copy ring to ctx
+    memcpy(&ctx->ring, &ext->ring, sizeof(struct io_uring));
+    ctx->initialized = true;
+    ctx->queue_depth = queue_depth;
+    
+    // Store ctx pointer in ext for lookup
+    ext->ctx = ctx;
+    
     // Store extended context in registry
-    pthread_mutex_lock(&registry_mutex);
-    for (int i = 0; i < MAX_CTX_REGISTRY; i++) {
-        if (ctx_registry[i] == NULL) {
-            ctx_registry[i] = ext;
-            ext->registry_index = i;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&registry_mutex);
-    
-    if (ext->registry_index < 0) {
-        // Registry full - cleanup and return error
-        free(ext->worker_threads);
-        pthread_cond_destroy(&ext->queue_not_full);
-        pthread_cond_destroy(&ext->queue_cond);
-        pthread_mutex_destroy(&ext->queue_mutex);
-        free(ext->work_queue);
-        io_uring_queue_exit(&ext->ring);
-        free(ext);
-        return -ENOSPC;
-    }
-    
-    // Copy ring to ctx (so ctx->ring points to ext->ring)
-    // Store ext pointer in registry instead of writing past struct boundary
-    // Writing past the struct would corrupt adjacent fields (like nvme_ctx in worker_thread)
     pthread_mutex_lock(&registry_mutex);
     int registry_idx = -1;
     for (int i = 0; i < MAX_CTX_REGISTRY; i++) {
@@ -246,33 +215,25 @@ int io_uring_nvme_init(struct io_uring_nvme_ctx *ctx, uint32_t queue_depth) {
         pthread_cond_destroy(&ext->queue_not_full);
         pthread_cond_destroy(&ext->queue_cond);
         pthread_mutex_destroy(&ext->queue_mutex);
+        free(ext->worker_threads);
         free(ext->work_queue);
         io_uring_queue_exit(&ext->ring);
         free(ext);
         return -ENOMEM;
     }
     
-    // Copy ring to ctx
-    memcpy(&ctx->ring, &ext->ring, sizeof(struct io_uring));
-    ctx->initialized = true;
-    ctx->queue_depth = queue_depth;
-    
     return 0;
 }
 
 // Helper to get extended context
 static struct io_uring_nvme_ctx_ext *get_ext_ctx(struct io_uring_nvme_ctx *ctx) {
-    // Look up in registry by ctx pointer
+    // Look up in registry by ctx pointer (stored in ext->ctx)
     pthread_mutex_lock(&registry_mutex);
     for (int i = 0; i < MAX_CTX_REGISTRY; i++) {
-        if (ctx_registry[i] != NULL) {
-            // Check if this registry entry's ring matches the ctx's ring
-            // We can compare by checking if the ring pointer matches
-            if (&ctx_registry[i]->ring == &ctx->ring) {
-                struct io_uring_nvme_ctx_ext *ext = ctx_registry[i];
-                pthread_mutex_unlock(&registry_mutex);
-                return ext;
-            }
+        if (ctx_registry[i] != NULL && ctx_registry[i]->ctx == ctx) {
+            struct io_uring_nvme_ctx_ext *ext = ctx_registry[i];
+            pthread_mutex_unlock(&registry_mutex);
+            return ext;
         }
     }
     pthread_mutex_unlock(&registry_mutex);
@@ -287,12 +248,31 @@ int io_uring_nvme_submit_passthru(struct io_uring_nvme_ctx *ctx,
                                    size_t data_len,
                                    io_uring_completion_cb cb,
                                    void *user_data) {
+    // Debug: Check parameters (only once)
+    static int param_debug_logged = 0;
+    if (!param_debug_logged) {
+        fprintf(stderr, "DEBUG: io_uring_nvme_submit_passthru: ctx=%p, initialized=%d, nvme_ctx=%p, cmd=%p, nsid=%u\n",
+                ctx, ctx ? ctx->initialized : 0, nvme_ctx, cmd, nsid);
+        param_debug_logged = 1;
+    }
+    
     if (!ctx || !ctx->initialized || !nvme_ctx || !cmd) {
+        static int invalid_param_logged = 0;
+        if (!invalid_param_logged) {
+            fprintf(stderr, "ERROR: io_uring_nvme_submit_passthru: Invalid parameters (ctx=%p, initialized=%d, nvme_ctx=%p, cmd=%p)\n",
+                    ctx, ctx ? ctx->initialized : 0, nvme_ctx, cmd);
+            invalid_param_logged = 1;
+        }
         return -EINVAL;
     }
     
     struct io_uring_nvme_ctx_ext *ext = get_ext_ctx(ctx);
     if (!ext) {
+        static int ext_not_found_logged = 0;
+        if (!ext_not_found_logged) {
+            fprintf(stderr, "ERROR: io_uring_nvme_submit_passthru: get_ext_ctx returned NULL\n");
+            ext_not_found_logged = 1;
+        }
         return -EINVAL;
     }
     
