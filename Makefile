@@ -8,18 +8,20 @@ LDFLAGS = -lpthread -lnuma
 # SPDK paths - adjust these based on your SPDK installation
 SPDK_ROOT ?= /usr/local
 SPDK_INC = $(SPDK_ROOT)/include
-SPDK_LIB = $(SPDK_ROOT)/lib
+# Check for build/lib first (if SPDK was built but not installed), then lib
+SPDK_LIB = $(shell if [ -d "$(SPDK_ROOT)/build/lib" ]; then echo "$(SPDK_ROOT)/build/lib"; else echo "$(SPDK_ROOT)/lib"; fi)
 
 # DPDK paths - adjust these based on your DPDK installation
 DPDK_ROOT ?= /usr/local
 DPDK_INC = $(DPDK_ROOT)/include
-DPDK_LIB = $(DPDK_ROOT)/lib
+# Check for build/lib first (if DPDK was built but not installed), then lib
+DPDK_LIB = $(shell if [ -d "$(DPDK_ROOT)/build/lib" ]; then echo "$(DPDK_ROOT)/build/lib"; else echo "$(DPDK_ROOT)/lib"; fi)
 
 # Include paths
 INCLUDES = -I$(SPDK_INC) -I$(DPDK_INC) -Iinclude
 
 # Library paths and libraries
-LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB)
+LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
 LIBS = -lspdk_nvme -lspdk_env_dpdk -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci -lrte_kvargs -lrte_hash \
        -lrte_cmdline -lrte_malloc -lrte_timer -lrte_telemetry -ldpdk
