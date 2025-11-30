@@ -464,34 +464,42 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // For NVMe-TCP, try using the namespace file descriptor first
-    // If that doesn't work, fall back to controller FD
+    // For NVMe-TCP, use libnvme's API with the namespace file descriptor
+    // This ensures proper handling of TCP transport
     int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
-    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
-    const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
+    if (ns_fd < 0) {
+        static int ns_fd_error_count = 0;
+        if (ns_fd_error_count < 3) {
+            fprintf(stderr, "ERROR: Failed to get namespace FD for nsid=%u\n", nsid);
+            ns_fd_error_count++;
+        }
+        return -EINVAL;
+    }
+    
+    // Use libnvme's API for submitting I/O passthrough commands
+    // This properly handles NVMe-TCP transport
+    __u32 result = 0;
     
     // Debug: Print command details (first few times only)
     static int debug_count = 0;
     if (debug_count < 3) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command: opcode=0x%x, nsid=%u, %s=%d, data_len=%zu, addr=%p\n",
-                ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
+        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, ns_fd=%d, data_len=%zu, addr=%p\n",
+                ioctl_cmd.opcode, ioctl_cmd.nsid, ns_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
         debug_count++;
     }
     
-    __u32 result = 0;
-    int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    // Use libnvme's nvme_submit_io_passthru which handles TCP correctly
+    int ret = nvme_submit_io_passthru(ns_fd, &ioctl_cmd, &result);
     if (ret < 0) {
         // Log error for debugging
         static int error_log_count = 0;
         if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
-                    strerror(errno), errno, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
+            fprintf(stderr, "ERROR: nvme_submit_io_passthru failed: %s (errno=%d, ns_fd=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
+                    strerror(-ret), -ret, ns_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
-        return -errno;
+        return ret;
     }
-    
-    result = ioctl_cmd.result;
     
     // Check result - result contains status field
     // Status code is in bits 15:1, phase bit is bit 0
