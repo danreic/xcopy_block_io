@@ -39,14 +39,14 @@ SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
 # Use -Bstatic to force static linking for DPDK libraries
 # Use --start-group and --end-group to handle circular dependencies
 # Note: rte_log functions should be provided by SPDK's env_dpdk
-# Many DPDK functions are in librte_eal, but we need all DPDK libraries
-# that SPDK's env_dpdk depends on
+# rte_malloc, rte_memzone functions are in librte_eal, not separate libraries
+# rte_intr functions might be in librte_eal or a separate library
 DPDK_LIBS = -Wl,-Bstatic \
             -Wl,--start-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
             -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer \
-            -lrte_telemetry -lrte_malloc -lrte_memzone \
+            -lrte_telemetry \
             -Wl,--end-group \
             -Wl,-Bdynamic
 
@@ -54,12 +54,18 @@ DPDK_LIBS = -Wl,-Bstatic \
 SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
 
 # Link order is critical:
-# 1. DPDK libraries first (static, in group for circular deps)
-# 2. SPDK libraries second (libspdk_env_dpdk provides rte_log for DPDK)
-# 3. DPDK libraries again (to resolve symbols that SPDK env_dpdk needs)
-# 4. System libraries last
-# Note: We link DPDK twice because SPDK's env_dpdk needs DPDK functions
-LIBS = $(DPDK_LIBS) $(SPDK_LIBS) $(DPDK_LIBS) $(SYSTEM_LIBS)
+# Put DPDK and SPDK libraries in the same group to handle circular dependencies
+# DPDK libraries need rte_log (provided by SPDK), SPDK env_dpdk needs DPDK functions
+# System libraries go last (outside the group)
+LIBS = -Wl,-Bstatic \
+       -Wl,--start-group \
+       -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+       -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
+       -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer -lrte_telemetry \
+       $(SPDK_LIBS) \
+       -Wl,--end-group \
+       -Wl,-Bdynamic \
+       $(SYSTEM_LIBS)
 
 # Source files
 SRCDIR = src
