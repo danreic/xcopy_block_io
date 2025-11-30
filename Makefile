@@ -38,7 +38,8 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 # For TCP transport support: In some SPDK versions, TCP is built into libspdk_nvme
 # In others, separate libraries exist: spdk_nvme_tcp, spdk_sock, spdk_sock_posix
 # TCP transport requires socket libraries for initiator support
-# Always link socket libraries if they exist (required for TCP transport)
+# Socket libraries MUST be linked with --whole-archive to ensure constructors run
+# which register the TCP transport at runtime
 SPDK_TCP_LIBS = $(shell \
 	if [ -f "$(SPDK_LIB)/libspdk_nvme_tcp.a" ]; then \
 		echo "-lspdk_nvme_tcp"; \
@@ -54,6 +55,7 @@ SPDK_TCP_LIBS = $(shell \
 )
 # Note: Even if libspdk_nvme_tcp.a doesn't exist, socket libraries may still be needed
 # because TCP initiator code is in libspdk_nvme.a and requires socket support
+# Socket libraries must be wrapped in --whole-archive to ensure transport registration
 
 SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
             $(SPDK_TCP_LIBS) \
@@ -94,7 +96,9 @@ LIBS = -Wl,-Bstatic \
        -lspdk_env_dpdk \
        -Wl,--no-whole-archive \
        -lspdk_log -lspdk_nvme \
+       -Wl,--whole-archive \
        $(SPDK_TCP_LIBS) \
+       -Wl,--no-whole-archive \
        -lspdk_nvmf -lspdk_event_nvmf \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
