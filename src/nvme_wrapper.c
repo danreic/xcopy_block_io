@@ -464,26 +464,28 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // I/O commands must use the controller file descriptor, not namespace device
-    // The namespace ID is specified in the command structure (cmd->nsid)
-    // Namespace devices don't support NVME_IOCTL_IO_CMD directly
+    // For NVMe-TCP, try using the namespace file descriptor first
+    // If that doesn't work, fall back to controller FD
+    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
     
     // Debug: Print command details (first few times only)
     static int debug_count = 0;
     if (debug_count < 3) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command: opcode=0x%x, nsid=%u, ctrl_fd=%d, data_len=%zu, addr=%p\n",
-                ioctl_cmd.opcode, ioctl_cmd.nsid, ctx->ctrl_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
+        fprintf(stderr, "DEBUG: Submitting NVMe command: opcode=0x%x, nsid=%u, %s=%d, data_len=%zu, addr=%p\n",
+                ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
         debug_count++;
     }
     
     __u32 result = 0;
-    int ret = ioctl(ctx->ctrl_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     if (ret < 0) {
         // Log error for debugging
         static int error_log_count = 0;
         if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, ctrl_fd=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
-                    strerror(errno), errno, ctx->ctrl_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
+            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
+                    strerror(errno), errno, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
         return -errno;
