@@ -153,6 +153,54 @@ check-dpdk-log:
 	@echo "  /usr/local/lib:"
 	@ls -1 /usr/local/lib/librte_log.a 2>/dev/null || echo "    Not found"
 
+# Check if SPDK was built with NVMe-TCP support
+check-spdk-tcp:
+	@echo "Checking SPDK NVMe-TCP transport support:"
+	@echo ""
+	@echo "1. Checking for TCP transport libraries:"
+	@if [ -f "$(SPDK_LIB)/libspdk_nvme_tcp.a" ]; then \
+		echo "  ✓ libspdk_nvme_tcp.a found"; \
+	else \
+		echo "  ✗ libspdk_nvme_tcp.a NOT found (may be built into libspdk_nvme.a)"; \
+	fi
+	@if [ -f "$(SPDK_LIB)/libspdk_sock.a" ]; then \
+		echo "  ✓ libspdk_sock.a found"; \
+	else \
+		echo "  ✗ libspdk_sock.a NOT found"; \
+	fi
+	@if [ -f "$(SPDK_LIB)/libspdk_sock_posix.a" ]; then \
+		echo "  ✓ libspdk_sock_posix.a found"; \
+	else \
+		echo "  ✗ libspdk_sock_posix.a NOT found"; \
+	fi
+	@echo ""
+	@echo "2. Checking for TCP transport symbols in libspdk_nvme.a:"
+	@if [ -f "$(SPDK_LIB)/libspdk_nvme.a" ]; then \
+		echo "  Searching for TCP-related symbols..."; \
+		nm $(SPDK_LIB)/libspdk_nvme.a 2>/dev/null | grep -i "tcp\|transport" | head -10 || echo "    No TCP symbols found"; \
+	else \
+		echo "  ✗ libspdk_nvme.a not found"; \
+	fi
+	@echo ""
+	@echo "3. Checking SPDK build configuration:"
+	@if [ -f "$(SPDK_ROOT)/config.log" ]; then \
+		echo "  Checking config.log for TCP-related settings..."; \
+		grep -i "tcp\|transport" $(SPDK_ROOT)/config.log 2>/dev/null | head -5 || echo "    No TCP config found in config.log"; \
+	else \
+		echo "  ✗ config.log not found at $(SPDK_ROOT)/config.log"; \
+	fi
+	@if [ -f "$(SPDK_ROOT)/build/include/spdk/config.h" ]; then \
+		echo "  Checking config.h for TCP defines..."; \
+		grep -i "TCP\|TRANSPORT" $(SPDK_ROOT)/build/include/spdk/config.h 2>/dev/null | head -5 || echo "    No TCP defines found"; \
+	fi
+	@echo ""
+	@echo "4. Checking for NVMe-oF libraries (may be needed for TCP):"
+	@if [ -f "$(SPDK_LIB)/libspdk_nvmf.a" ]; then \
+		echo "  ✓ libspdk_nvmf.a found"; \
+	else \
+		echo "  ✗ libspdk_nvmf.a NOT found"; \
+	fi
+
 # Build the main executable
 # Add rpath so the binary can find libraries at runtime
 $(TARGET): $(OBJECTS)
