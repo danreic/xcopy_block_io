@@ -69,10 +69,12 @@ check-spdk-libs:
 
 # Build the main executable
 # Add rpath so the binary can find libraries at runtime
+# Use $ORIGIN to make rpath relative, or absolute paths
 $(TARGET): $(OBJECTS)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
 		-Wl,--as-needed \
-		-Wl,-rpath,$(SPDK_LIB):$(DPDK_LIB):/usr/local/lib
+		-Wl,-rpath,$(SPDK_LIB):$(DPDK_LIB):/usr/local/lib \
+		-Wl,--disable-new-dtags
 
 # Compile source files
 %.o: %.c
