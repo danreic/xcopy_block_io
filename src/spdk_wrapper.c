@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
+#include <dlfcn.h>
 
 // Probe callback for controller attachment
 static bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
@@ -99,6 +100,19 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
             // Ensure TCP transport is available
             // In some SPDK versions, you may need to register the transport first
             ctx->trid.trtype = SPDK_NVME_TRANSPORT_TCP;
+            
+            // Check if TCP transport is available by trying to get transport name
+            // This will help diagnose if SPDK was built with TCP support
+            {
+                const char *tcp_name = spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_TCP);
+                if (!tcp_name || strcmp(tcp_name, "Unknown") == 0) {
+                    fprintf(stderr, "Error: NVMe TCP transport is not available in this SPDK build\n");
+                    fprintf(stderr, "  SPDK must be rebuilt with TCP transport support\n");
+                    fprintf(stderr, "  TCP transport should be enabled by default in SPDK\n");
+                    fprintf(stderr, "  Try: cd /usr/local/src/spdk && ./configure && make -j$(nproc)\n");
+                    return -ENOTSUP;
+                }
+            }
             if (transport->traddr) {
                 snprintf(ctx->trid.traddr, sizeof(ctx->trid.traddr), "%s", transport->traddr);
             } else {
