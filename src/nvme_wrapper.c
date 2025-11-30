@@ -468,8 +468,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         static int range_data_debug_logged = 0;
         if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
             struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)data;
-            fprintf(stderr, "DEBUG: Range descriptor in data buffer: src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
-                    first_range->src_nsid, first_range->src_lba, first_range->num_blocks, first_range->dst_lba);
+            // Note: Values are in little-endian format, so we need to convert back for display
+            uint32_t src_nsid_le = first_range->src_nsid;
+            uint64_t src_lba_le = first_range->src_lba;
+            uint32_t num_blocks_le = first_range->num_blocks;
+            uint64_t dst_lba_le = first_range->dst_lba;
+            fprintf(stderr, "DEBUG: Range descriptor in data buffer (little-endian): src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
+                    le32toh(src_nsid_le), le64toh(src_lba_le), le32toh(num_blocks_le), le64toh(dst_lba_le));
             range_data_debug_logged = 1;
         }
     } else {
@@ -487,7 +492,7 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Debug: Print command details (first few times only)
     static int debug_count = 0;
     if (debug_count < 3) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, %s=%d, data_len=%u, addr=%p\n",
+        fprintf(stderr, "DEBUG: Submitting NVMe command via direct ioctl: opcode=0x%x, nsid=%u, %s=%d, data_len=%u, addr=%p\n",
                 ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
         fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
                 ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
@@ -495,10 +500,10 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         debug_count++;
     }
     
-    // Use libnvme's nvme_submit_io_passthru
+    // Use direct ioctl for I/O commands (like nvme-cli does)
+    // NVME_IOCTL_IO_CMD is for I/O commands, NVME_IOCTL_ADMIN_CMD is for admin commands
     // Try namespace FD first (like nvme-cli), fall back to controller FD
-    __u32 result = 0;
-    int ret = nvme_submit_io_passthru(target_fd, &ioctl_cmd, &result);
+    int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     
     // Copy back data if we allocated an aligned buffer
     if (data_copied && data && data_len > 0) {
@@ -507,18 +512,19 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     if (ret < 0) {
-        // Log error for debugging
+        // ioctl returns -1 on error, errno contains the error code
         static int error_log_count = 0;
         if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: nvme_submit_io_passthru failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
-                    strerror(-ret), -ret, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
+            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
+                    strerror(errno), errno, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
-        return ret;
+        return -errno;
     }
     
     // Check result - result contains status field
     // Status code is in bits 15:1, phase bit is bit 0
+    __u32 result = ioctl_cmd.result;
     __u16 status = (result >> 1) & 0x7FFF;
     __u8 status_type = (status >> 9) & 0x7;
     __u16 status_code = status & 0xFF;
