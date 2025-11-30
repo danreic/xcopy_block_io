@@ -12,15 +12,16 @@
 #define NVME_OPC_COPY 0x19
 
 // Copy Range Descriptor structure (32 bytes as per NVMe spec)
+// Format: DWORD 0: Reserved, DWORD 1: Source NSID, DWORD 2-3: Source LBA,
+//         DWORD 4: Reserved, DWORD 5: Number of Blocks, DWORD 6-7: Destination LBA
 struct copy_range_descriptor {
-    uint32_t rsvd0;
-    uint32_t src_nsid;
-    uint64_t src_lba;
-    uint32_t rsvd1;
-    uint32_t num_blocks;       // Number of logical blocks (0-based, so 0 = 1 block)
-    uint64_t dst_lba;
-    uint32_t rsvd2;
-    uint32_t rsvd3;
+    uint32_t rsvd0;            // DWORD 0: Reserved
+    uint32_t src_nsid;         // DWORD 1: Source Namespace Identifier
+    uint64_t src_lba;          // DWORD 2-3: Source Starting LBA
+    uint32_t rsvd1;            // DWORD 4: Reserved
+    uint32_t num_blocks;       // DWORD 5: Number of logical blocks (0-based, so 0 = 1 block)
+    uint64_t dst_lba;          // DWORD 6-7: Destination Starting LBA
+    // Total: 4+4+8+4+4+8 = 32 bytes (no additional reserved fields)
 } __attribute__((packed));
 
 // XCOPY operation context

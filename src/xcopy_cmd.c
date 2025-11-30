@@ -52,8 +52,7 @@ int xcopy_cmd_build(struct xcopy_operation *op,
         op->ranges[i].rsvd1 = htole32(ranges[i].rsvd1);
         op->ranges[i].num_blocks = htole32(ranges[i].num_blocks);
         op->ranges[i].dst_lba = htole64(ranges[i].dst_lba);
-        op->ranges[i].rsvd2 = htole32(ranges[i].rsvd2);
-        op->ranges[i].rsvd3 = htole32(ranges[i].rsvd3);
+        // Note: No rsvd2/rsvd3 - descriptor is exactly 32 bytes per NVMe spec
     }
     op->num_ranges = num_ranges;
     
