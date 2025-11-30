@@ -27,9 +27,9 @@ int volume_manager_init(struct volume_manager *vm) {
 
 int volume_manager_add(struct volume_manager *vm,
                       uint32_t nsid,
-                      struct nvme_ns *ns,
-                      struct nvme_ctrl *ctrl) {
-    if (!vm || !ns || !ctrl) {
+                      int ns_fd,
+                      int ctrl_fd) {
+    if (!vm || ns_fd < 0 || ctrl_fd < 0) {
         return -EINVAL;
     }
     
@@ -37,10 +37,9 @@ int volume_manager_add(struct volume_manager *vm,
     for (uint32_t i = 0; i < vm->num_volumes; i++) {
         if (vm->volumes[i].nsid == nsid) {
             // Update existing volume
-            vm->volumes[i].ns = ns;
-            vm->volumes[i].ctrl = ctrl;
-            vm->volumes[i].size_blocks = nvme_ns_get_num_sectors(ns);
-            vm->volumes[i].block_size = nvme_ns_get_sector_size(ns);
+            vm->volumes[i].ns_fd = ns_fd;
+            vm->volumes[i].ctrl_fd = ctrl_fd;
+            // Size and block size should be set by caller
             snprintf(vm->volumes[i].name, sizeof(vm->volumes[i].name),
                     "NSID %u", nsid);
             return 0;
@@ -62,10 +61,9 @@ int volume_manager_add(struct volume_manager *vm,
     // Add new volume
     struct volume_info *vol = &vm->volumes[vm->num_volumes];
     vol->nsid = nsid;
-    vol->ns = ns;
-    vol->ctrl = ctrl;
-    vol->size_blocks = nvme_ns_get_num_sectors(ns);
-    vol->block_size = nvme_ns_get_sector_size(ns);
+    vol->ns_fd = ns_fd;
+    vol->ctrl_fd = ctrl_fd;
+    // Size and block size should be set by caller
     snprintf(vol->name, sizeof(vol->name), "NSID %u", nsid);
     
     vm->num_volumes++;

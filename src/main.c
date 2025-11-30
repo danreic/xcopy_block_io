@@ -333,8 +333,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    struct nvme_ctrl *ctrl = nvme_wrapper_get_ctrl(&nvme_ctx);
-    if (!ctrl) {
+    int ctrl_fd = nvme_wrapper_get_ctrl_fd(&nvme_ctx);
+    if (ctrl_fd < 0) {
         fprintf(stderr, "No controller found\n");
         nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
@@ -351,16 +351,22 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    // Discover and add namespaces
-    // libnvme uses nsid starting from 1, and we iterate through all possible nsids
-    // The actual number of namespaces is determined by the controller
-    for (uint32_t nsid = 1; nsid <= 256; nsid++) {
-        struct nvme_ns *ns = nvme_wrapper_get_ns(&nvme_ctx, nsid);
-        if (ns) {
-            // Check if namespace is active by checking if it has valid size
-            uint64_t ns_size = nvme_wrapper_get_ns_size(&nvme_ctx, nsid);
-            if (ns_size > 0) {
-                volume_manager_add(&vol_mgr, nsid, ns, ctrl);
+    // Add namespaces from the context
+    // Namespaces are already discovered in nvme_wrapper_connect()
+    for (uint32_t i = 0; i < nvme_ctx.num_ns; i++) {
+        uint32_t nsid = nvme_ctx.ns_list[i].nsid;
+        int ns_fd = nvme_wrapper_get_ns_fd(&nvme_ctx, nsid);
+        uint64_t ns_size = nvme_wrapper_get_ns_size(&nvme_ctx, nsid);
+        uint32_t block_size = nvme_wrapper_get_block_size(&nvme_ctx, nsid);
+        
+        if (ns_fd >= 0 && ns_size > 0) {
+            if (volume_manager_add(&vol_mgr, nsid, ns_fd, ctrl_fd) == 0) {
+                // Set size and block size
+                struct volume_info *vol = volume_manager_get(&vol_mgr, nsid);
+                if (vol) {
+                    vol->size_blocks = ns_size;
+                    vol->block_size = block_size;
+                }
             }
         }
     }

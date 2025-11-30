@@ -6,10 +6,6 @@
 #include <libnvme.h>
 #include <sys/types.h>
 
-// Forward declarations
-struct nvme_ctrl;
-struct nvme_ns;
-
 // Transport types (keeping same enum for compatibility)
 typedef enum {
     XCOPY_TRANSPORT_PCIE,
@@ -26,11 +22,22 @@ struct xcopy_transport_config {
     char *hostnqn;             // Host NQN (optional)
 };
 
+// Namespace information
+struct nvme_ns_info {
+    uint32_t nsid;
+    uint64_t size_blocks;
+    uint32_t block_size;
+    int fd;                    // File descriptor for this namespace
+};
+
 // NVMe context (replaces spdk_context)
+// libnvme uses file descriptors, not controller objects
 struct nvme_context {
-    struct nvme_ctrl *ctrl;    // libnvme controller
-    struct nvme_ns *ns_list;   // List of namespaces
+    int ctrl_fd;               // Controller file descriptor
+    char device_path[64];      // Device path (e.g., /dev/nvme0)
+    struct nvme_ns_info *ns_list;  // List of namespaces
     uint32_t num_ns;           // Number of namespaces
+    uint32_t ns_capacity;      // Capacity of ns_list array
     bool initialized;
     bool connected;
 };
@@ -43,11 +50,11 @@ int nvme_wrapper_init(struct nvme_context *ctx,
 int nvme_wrapper_connect(struct nvme_context *ctx,
                         struct xcopy_transport_config *transport);
 
-// Get controller (returns libnvme controller pointer)
-struct nvme_ctrl *nvme_wrapper_get_ctrl(struct nvme_context *ctx);
+// Get controller file descriptor
+int nvme_wrapper_get_ctrl_fd(struct nvme_context *ctx);
 
-// Get namespace by ID
-struct nvme_ns *nvme_wrapper_get_ns(struct nvme_context *ctx, uint32_t nsid);
+// Get namespace file descriptor by ID
+int nvme_wrapper_get_ns_fd(struct nvme_context *ctx, uint32_t nsid);
 
 // Get namespace size in blocks
 uint64_t nvme_wrapper_get_ns_size(struct nvme_context *ctx, uint32_t nsid);
@@ -69,4 +76,3 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                                  size_t data_len);
 
 #endif // NVME_WRAPPER_H
-

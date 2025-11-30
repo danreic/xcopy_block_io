@@ -41,8 +41,10 @@ static void xcopy_completion_cb(void *user_data, int result, uint32_t status) {
         for (uint32_t i = 0; i < op->num_ranges; i++) {
             uint64_t blocks = (uint64_t)op->ranges[i].num_blocks + 1;
             // Get block size from namespace (default to 512 if not available)
-            struct nvme_ns *ns = nvme_wrapper_get_ns(worker->nvme_ctx, op->ranges[i].src_nsid);
-            uint32_t block_size = ns ? nvme_wrapper_get_block_size(worker->nvme_ctx, op->ranges[i].src_nsid) : 512;
+            uint32_t block_size = nvme_wrapper_get_block_size(worker->nvme_ctx, op->ranges[i].src_nsid);
+            if (block_size == 0) {
+                block_size = 512;  // Default
+            }
             bytes_copied += blocks * block_size;
         }
         
