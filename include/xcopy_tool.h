@@ -4,11 +4,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Forward declarations
-struct spdk_nvme_ctrlr;
-struct spdk_nvme_ns;
-struct spdk_nvme_qpair;
-
 // Maximum number of ranges per NVMe Copy command
 #define MAX_COPY_RANGES 16
 

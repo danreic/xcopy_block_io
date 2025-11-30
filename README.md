@@ -1,6 +1,6 @@
 # NVMe XCOPY I/O Tool
 
-A low-level C tool for generating high-volume NVMe XCOPY (Copy command) block load using SPDK. Supports multiple concurrent copy ranges and cross-volume operations.
+A low-level C tool for generating high-volume NVMe XCOPY (Copy command) block load using libnvme (Linux kernel NVMe library). Supports multiple concurrent copy ranges and cross-volume operations.
 
 ## Features
 
@@ -14,23 +14,24 @@ A low-level C tool for generating high-volume NVMe XCOPY (Copy command) block lo
 
 ### Prerequisites
 
-- SPDK (v23.x or later)
-- DPDK (required by SPDK)
+- **libnvme**: Linux kernel's user-space NVMe library
+  - Install: `sudo apt-get install libnvme-dev` (Ubuntu/Debian)
+  - Or: `sudo yum install libnvme-devel` (RHEL/CentOS)
+- **liburing**: io_uring library for async I/O
+  - Install: `sudo apt-get install liburing-dev` (Ubuntu/Debian)
+  - Or: `sudo yum install liburing-devel` (RHEL/CentOS)
 - GCC compiler
 - pthread and libnuma development libraries
+- Linux kernel 5.0+ with NVMe-TCP support (kernel module: `nvme-tcp`)
 
 ### Compilation
 
 ```bash
-# Set SPDK and DPDK paths if not in /usr/local
-export SPDK_ROOT=/path/to/spdk
-export DPDK_ROOT=/path/to/dpdk
-
 # Build
 make
 
-# Or specify paths directly
-make SPDK_ROOT=/usr/local DPDK_ROOT=/usr/local
+# Check if required libraries are installed
+make check-libs
 ```
 
 ## Usage
@@ -104,12 +105,13 @@ If you prefer to specify transport details manually:
 
 The tool consists of several core modules:
 
-1. **SPDK Wrapper** (`spdk_wrapper.c`): Handles SPDK initialization and transport abstraction
-2. **Command Builder** (`xcopy_cmd.c`): Constructs NVMe Copy commands with range descriptors
-3. **Range Manager** (`range_manager.c`): Manages workload distribution across ranges
-4. **Volume Manager** (`volume_manager.c`): Handles namespace/volume mapping
-5. **Concurrency Manager** (`concurrency_manager.c`): Manages multi-threaded operation submission
-6. **Statistics** (`statistics.c`): Collects and reports performance metrics
+1. **NVMe Wrapper** (`nvme_wrapper.c`): Handles libnvme initialization and transport abstraction
+2. **io_uring Wrapper** (`io_uring_wrapper.c`): Provides async I/O layer using io_uring
+3. **Command Builder** (`xcopy_cmd.c`): Constructs NVMe Copy commands with range descriptors
+4. **Range Manager** (`range_manager.c`): Manages workload distribution across ranges
+5. **Volume Manager** (`volume_manager.c`): Handles namespace/volume mapping
+6. **Concurrency Manager** (`concurrency_manager.c`): Manages multi-threaded operation submission with io_uring
+7. **Statistics** (`statistics.c`): Collects and reports performance metrics
 
 ## License
 

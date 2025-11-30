@@ -1,5 +1,5 @@
 #include "xcopy_tool.h"
-#include "spdk_wrapper.h"
+#include "nvme_wrapper.h"
 #include "xcopy_cmd.h"
 #include "range_manager.h"
 #include "volume_manager.h"
@@ -282,7 +282,7 @@ static int parse_args(int argc, char **argv, struct xcopy_config *config) {
 int main(int argc, char **argv) {
     struct xcopy_config config;
     struct xcopy_transport_config transport;
-    struct spdk_context spdk_ctx;
+    struct nvme_context nvme_ctx;
     struct volume_manager vol_mgr;
     struct concurrency_manager concurrency_mgr;
     struct range_generator range_gen;
@@ -300,15 +300,15 @@ int main(int argc, char **argv) {
     signal(SIGTERM, signal_handler);
     
     // Initialize transport configuration
-    transport.type = spdk_wrapper_parse_transport(config.transport_type);
+    transport.type = nvme_wrapper_parse_transport(config.transport_type);
     transport.traddr = config.traddr;
     transport.trsvcid = config.trsvcid;
     transport.subnqn = config.subnqn;
     transport.hostnqn = NULL;
     
-    // Initialize SPDK
+    // Initialize NVMe
     if (config.verbose) {
-        printf("Initializing SPDK...\n");
+        printf("Initializing NVMe...\n");
         printf("Transport type: %s\n", config.transport_type);
         if (config.traddr) {
             printf("Transport address: %s\n", config.traddr);
@@ -321,21 +321,21 @@ int main(int argc, char **argv) {
         }
     }
     
-    if (spdk_wrapper_init(&spdk_ctx, &transport) != 0) {
-        fprintf(stderr, "Failed to initialize SPDK\n");
+    if (nvme_wrapper_init(&nvme_ctx, &transport) != 0) {
+        fprintf(stderr, "Failed to initialize NVMe\n");
         return 1;
     }
     
-    if (spdk_wrapper_probe_attach(&spdk_ctx, &transport) != 0) {
-        fprintf(stderr, "Failed to probe and attach to NVMe controller\n");
-        spdk_wrapper_cleanup(&spdk_ctx);
+    if (nvme_wrapper_connect(&nvme_ctx, &transport) != 0) {
+        fprintf(stderr, "Failed to connect to NVMe controller\n");
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
-    struct spdk_nvme_ctrlr *ctrlr = spdk_wrapper_get_ctrlr(&spdk_ctx);
-    if (!ctrlr) {
+    struct nvme_ctrl *ctrl = nvme_wrapper_get_ctrl(&nvme_ctx);
+    if (!ctrl) {
         fprintf(stderr, "No controller found\n");
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
@@ -346,20 +346,20 @@ int main(int argc, char **argv) {
     // Initialize volume manager
     if (volume_manager_init(&vol_mgr) != 0) {
         fprintf(stderr, "Failed to initialize volume manager\n");
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
     // Discover and add namespaces
-    // SPDK uses nsid starting from 1, and we iterate through all possible nsids
+    // libnvme uses nsid starting from 1, and we iterate through all possible nsids
     // The actual number of namespaces is determined by the controller
     for (uint32_t nsid = 1; nsid <= 256; nsid++) {
-        struct spdk_nvme_ns *ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
+        struct nvme_ns *ns = nvme_wrapper_get_ns(&nvme_ctx, nsid);
         if (ns) {
             // Check if namespace is active by checking if it has valid size
-            uint64_t ns_size = spdk_nvme_ns_get_num_sectors(ns);
+            uint64_t ns_size = nvme_wrapper_get_ns_size(&nvme_ctx, nsid);
             if (ns_size > 0) {
-                volume_manager_add(&vol_mgr, nsid, ns, ctrlr);
+                volume_manager_add(&vol_mgr, nsid, ns, ctrl);
             }
         }
     }
@@ -376,14 +376,14 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error: Invalid namespace ID (src=%u, dst=%u)\n",
                 config.src_nsid, config.dst_nsid);
         volume_manager_cleanup(&vol_mgr);
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
     if (!volume_manager_validate_cross_volume(&vol_mgr, config.src_nsid, config.dst_nsid)) {
         fprintf(stderr, "Error: Namespaces are not compatible for cross-volume copy\n");
         volume_manager_cleanup(&vol_mgr);
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
@@ -400,15 +400,15 @@ int main(int argc, char **argv) {
     if (range_generator_init(&range_gen, &workload) != 0) {
         fprintf(stderr, "Failed to initialize range generator\n");
         volume_manager_cleanup(&vol_mgr);
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
     // Initialize concurrency manager
-    if (concurrency_manager_init(&concurrency_mgr, ctrlr, config.num_threads, config.queue_depth) != 0) {
+    if (concurrency_manager_init(&concurrency_mgr, &nvme_ctx, config.num_threads, config.queue_depth) != 0) {
         fprintf(stderr, "Failed to initialize concurrency manager\n");
         volume_manager_cleanup(&vol_mgr);
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
@@ -417,7 +417,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to start worker threads\n");
         concurrency_manager_cleanup(&concurrency_mgr);
         volume_manager_cleanup(&vol_mgr);
-        spdk_wrapper_cleanup(&spdk_ctx);
+        nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
@@ -518,7 +518,7 @@ int main(int argc, char **argv) {
     // Cleanup
     concurrency_manager_cleanup(&concurrency_mgr);
     volume_manager_cleanup(&vol_mgr);
-    spdk_wrapper_cleanup(&spdk_ctx);
+    nvme_wrapper_cleanup(&nvme_ctx);
     
     return rc;
 }

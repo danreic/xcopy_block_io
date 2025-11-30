@@ -15,7 +15,7 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     memset(&op->cmd, 0, sizeof(op->cmd));
     
     // Set command opcode (NVMe Copy = 0x19)
-    op->cmd.opc = NVME_OPC_COPY;
+    op->cmd.opcode = NVME_OPC_COPY;
     
     // Set destination namespace ID
     op->cmd.nsid = dst_nsid;
@@ -23,6 +23,17 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     
     // Set number of ranges (0-based, so num_ranges-1)
     op->cmd.cdw10 = (num_ranges - 1) & 0xFFFF;
+    
+    // Set flags and data for passthrough command
+    // Note: libnvme's nvme_passthru_cmd structure fields may vary by version
+    // Common fields: opcode, flags, rsvd1, nsid, cdw2-cdw15, data_len, metadata_len
+    // Data pointer is typically passed separately to nvme_submit_io_passthru()
+    op->cmd.flags = 0;  // No special flags
+    op->cmd.rsvd1 = 0;
+    op->cmd.data_len = xcopy_cmd_get_data_size(num_ranges);
+    op->cmd.metadata_len = 0;
+    op->cmd.timeout_ms = 0;  // Use default timeout
+    // Note: Data pointer (op->ranges) is passed separately to submit function
     
     // Copy range descriptors
     memcpy(op->ranges, ranges, num_ranges * sizeof(struct copy_range_descriptor));

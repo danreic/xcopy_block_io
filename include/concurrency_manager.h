@@ -4,16 +4,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <pthread.h>
-#include <spdk/nvme.h>
+#include <libnvme.h>
 #include "xcopy_cmd.h"
 #include "xcopy_tool.h"
+#include "io_uring_wrapper.h"
+#include "nvme_wrapper.h"
+
+// Forward declarations
+struct nvme_ctrl;
+struct nvme_context;
 
 // Thread context for worker threads
 struct worker_thread {
     pthread_t thread;
     uint32_t thread_id;
-    struct spdk_nvme_qpair *qpair;
-    struct spdk_nvme_ctrlr *ctrlr;
+    struct io_uring_nvme_ctx io_uring_ctx;  // io_uring context for async I/O
+    struct nvme_context *nvme_ctx;          // NVMe context
+    struct nvme_ctrl *ctrl;                 // libnvme controller
     
     // Operation queue
     struct xcopy_operation *operations;
@@ -52,7 +59,7 @@ struct concurrency_manager {
 
 // Initialize concurrency manager
 int concurrency_manager_init(struct concurrency_manager *cm,
-                            struct spdk_nvme_ctrlr *ctrlr,
+                            struct nvme_context *nvme_ctx,
                             uint32_t num_threads,
                             uint32_t queue_depth);
 

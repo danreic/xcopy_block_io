@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <spdk/nvme.h>
+#include <libnvme.h>
 
 // Maximum number of ranges per NVMe Copy command
 #define MAX_COPY_RANGES 16
@@ -25,7 +25,7 @@ struct copy_range_descriptor {
 
 // XCOPY operation context
 struct xcopy_operation {
-    struct spdk_nvme_cmd cmd;
+    struct nvme_passthru_cmd cmd;  // libnvme command structure
     struct copy_range_descriptor ranges[MAX_COPY_RANGES];
     uint32_t num_ranges;
     uint32_t dst_nsid;

@@ -3,13 +3,17 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include <spdk/nvme.h>
+#include <libnvme.h>
+
+// Forward declarations
+struct nvme_ns;
+struct nvme_ctrl;
 
 // Volume/Namespace information
 struct volume_info {
     uint32_t nsid;
-    struct spdk_nvme_ns *ns;
-    struct spdk_nvme_ctrlr *ctrlr;
+    struct nvme_ns *ns;        // libnvme namespace
+    struct nvme_ctrl *ctrl;    // libnvme controller
     uint64_t size_blocks;
     uint32_t block_size;
     char name[256];            // Human-readable name
@@ -28,8 +32,8 @@ int volume_manager_init(struct volume_manager *vm);
 // Add a volume/namespace
 int volume_manager_add(struct volume_manager *vm,
                       uint32_t nsid,
-                      struct spdk_nvme_ns *ns,
-                      struct spdk_nvme_ctrlr *ctrlr);
+                      struct nvme_ns *ns,
+                      struct nvme_ctrl *ctrl);
 
 // Get volume by namespace ID
 struct volume_info *volume_manager_get(struct volume_manager *vm, uint32_t nsid);

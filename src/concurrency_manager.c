@@ -3,6 +3,7 @@
 #include "concurrency_manager.h"
 #include "xcopy_cmd.h"
 #include "statistics.h"
+#include "nvme_wrapper.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,9 +13,9 @@
 #include <stdint.h>
 #include <limits.h>
 
-// Completion callback for NVMe commands
-static void xcopy_completion_cb(void *arg, const struct spdk_nvme_cpl *cpl) {
-    struct xcopy_operation *op = (struct xcopy_operation *)arg;
+// Completion callback for NVMe commands (called from io_uring wrapper)
+static void xcopy_completion_cb(void *user_data, int result, uint32_t status) {
+    struct xcopy_operation *op = (struct xcopy_operation *)user_data;
     struct worker_thread *worker = (struct worker_thread *)op->user_data;
     
     if (!op || !worker) {
@@ -28,18 +29,20 @@ static void xcopy_completion_cb(void *arg, const struct spdk_nvme_cpl *cpl) {
     uint64_t latency_us = end_time_us - op->start_time_us;
     
     // Update statistics
-    if (spdk_nvme_cpl_is_error(cpl)) {
+    if (result != 0 || status != 0) {
         worker->ops_failed++;
+        op->status = -1;
     } else {
         worker->ops_completed++;
+        op->status = 0;
         
         // Calculate bytes copied (sum of all ranges)
         uint64_t bytes_copied = 0;
         for (uint32_t i = 0; i < op->num_ranges; i++) {
             uint64_t blocks = (uint64_t)op->ranges[i].num_blocks + 1;
             // Get block size from namespace (default to 512 if not available)
-            struct spdk_nvme_ns *ns = spdk_nvme_ctrlr_get_ns(worker->ctrlr, op->ranges[i].src_nsid);
-            uint32_t block_size = ns ? spdk_nvme_ns_get_sector_size(ns) : 512;
+            struct nvme_ns *ns = nvme_wrapper_get_ns(worker->nvme_ctx, op->ranges[i].src_nsid);
+            uint32_t block_size = ns ? nvme_wrapper_get_block_size(worker->nvme_ctx, op->ranges[i].src_nsid) : 512;
             bytes_copied += blocks * block_size;
         }
         
@@ -57,7 +60,6 @@ static void xcopy_completion_cb(void *arg, const struct spdk_nvme_cpl *cpl) {
     
     // Mark operation as completed
     op->completed = true;
-    op->status = spdk_nvme_cpl_is_error(cpl) ? -1 : 0;
     
     // Decrement in-flight count
     pthread_mutex_lock(&worker->queue_mutex);
@@ -77,8 +79,8 @@ static void *worker_thread_func(void *arg) {
     worker->running = true;
     
     while (worker->running && !worker->should_stop) {
-        // Poll for completions
-        spdk_nvme_qpair_process_completions(worker->qpair, 0);
+        // Process io_uring completions (non-blocking)
+        io_uring_nvme_process_completions(&worker->io_uring_ctx, 32);
         
         // Small sleep to avoid busy-waiting
         usleep(10);
@@ -86,7 +88,7 @@ static void *worker_thread_func(void *arg) {
     
     // Process any remaining completions
     while (worker->in_flight > 0) {
-        spdk_nvme_qpair_process_completions(worker->qpair, 0);
+        io_uring_nvme_process_completions(&worker->io_uring_ctx, 32);
         usleep(100);
     }
     
@@ -95,10 +97,10 @@ static void *worker_thread_func(void *arg) {
 }
 
 int concurrency_manager_init(struct concurrency_manager *cm,
-                            struct spdk_nvme_ctrlr *ctrlr,
+                            struct nvme_context *nvme_ctx,
                             uint32_t num_threads,
                             uint32_t queue_depth) {
-    if (!cm || !ctrlr || num_threads == 0 || queue_depth == 0) {
+    if (!cm || !nvme_ctx || num_threads == 0 || queue_depth == 0) {
         return -EINVAL;
     }
     
@@ -124,31 +126,27 @@ int concurrency_manager_init(struct concurrency_manager *cm,
         struct worker_thread *worker = &cm->workers[i];
         
         worker->thread_id = i;
-        worker->ctrlr = ctrlr;
+        worker->nvme_ctx = nvme_ctx;
+        worker->ctrl = nvme_wrapper_get_ctrl(nvme_ctx);
         
-        // Allocate queue pair
-        struct spdk_nvme_io_qpair_opts opts;
-        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-        opts.qprio = SPDK_NVME_QPRIO_URGENT;
-        opts.io_queue_size = queue_depth;
-        
-        worker->qpair = spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, &opts, sizeof(opts));
-        if (!worker->qpair) {
+        // Initialize io_uring context
+        int ret = io_uring_nvme_init(&worker->io_uring_ctx, queue_depth);
+        if (ret != 0) {
             // Cleanup on failure
             for (uint32_t j = 0; j < i; j++) {
-                spdk_nvme_ctrlr_free_io_qpair(cm->workers[j].qpair);
+                io_uring_nvme_cleanup(&cm->workers[j].io_uring_ctx);
             }
             pthread_mutex_destroy(&cm->stats_mutex);
             free(cm->workers);
-            return -1;
+            return ret;
         }
         
         // Allocate operation queue
         worker->operations = calloc(queue_depth, sizeof(struct xcopy_operation));
         if (!worker->operations) {
-            spdk_nvme_ctrlr_free_io_qpair(worker->qpair);
+            io_uring_nvme_cleanup(&worker->io_uring_ctx);
             for (uint32_t j = 0; j < i; j++) {
-                spdk_nvme_ctrlr_free_io_qpair(cm->workers[j].qpair);
+                io_uring_nvme_cleanup(&cm->workers[j].io_uring_ctx);
                 free(cm->workers[j].operations);
             }
             pthread_mutex_destroy(&cm->stats_mutex);
@@ -164,9 +162,9 @@ int concurrency_manager_init(struct concurrency_manager *cm,
         // Initialize synchronization primitives
         if (pthread_mutex_init(&worker->queue_mutex, NULL) != 0) {
             free(worker->operations);
-            spdk_nvme_ctrlr_free_io_qpair(worker->qpair);
+            io_uring_nvme_cleanup(&worker->io_uring_ctx);
             for (uint32_t j = 0; j < i; j++) {
-                spdk_nvme_ctrlr_free_io_qpair(cm->workers[j].qpair);
+                io_uring_nvme_cleanup(&cm->workers[j].io_uring_ctx);
                 free(cm->workers[j].operations);
                 pthread_mutex_destroy(&cm->workers[j].queue_mutex);
             }
@@ -178,9 +176,9 @@ int concurrency_manager_init(struct concurrency_manager *cm,
         if (pthread_cond_init(&worker->queue_cond, NULL) != 0) {
             pthread_mutex_destroy(&worker->queue_mutex);
             free(worker->operations);
-            spdk_nvme_ctrlr_free_io_qpair(worker->qpair);
+            io_uring_nvme_cleanup(&worker->io_uring_ctx);
             for (uint32_t j = 0; j < i; j++) {
-                spdk_nvme_ctrlr_free_io_qpair(cm->workers[j].qpair);
+                io_uring_nvme_cleanup(&cm->workers[j].io_uring_ctx);
                 free(cm->workers[j].operations);
                 pthread_mutex_destroy(&cm->workers[j].queue_mutex);
                 pthread_cond_destroy(&cm->workers[j].queue_cond);
@@ -258,10 +256,15 @@ int concurrency_manager_submit(struct concurrency_manager *cm,
     size_t data_size = xcopy_cmd_get_data_size(queued_op->num_ranges);
     void *data = queued_op->ranges;
     
-    // Submit command
-    int rc = spdk_nvme_ctrlr_cmd_io_raw(worker->ctrlr, worker->qpair,
-                                       &queued_op->cmd, data, data_size,
-                                       xcopy_completion_cb, queued_op);
+    // Submit command via io_uring (async)
+    int rc = io_uring_nvme_submit_passthru(&worker->io_uring_ctx,
+                                            worker->nvme_ctx,
+                                            queued_op->dst_nsid,
+                                            &queued_op->cmd,
+                                            data,
+                                            data_size,
+                                            xcopy_completion_cb,
+                                            queued_op);
     
     if (rc != 0) {
         pthread_mutex_lock(&worker->queue_mutex);
@@ -301,7 +304,7 @@ void concurrency_manager_wait(struct concurrency_manager *cm) {
     for (uint32_t i = 0; i < cm->num_workers; i++) {
         struct worker_thread *worker = &cm->workers[i];
         while (worker->in_flight > 0) {
-            spdk_nvme_qpair_process_completions(worker->qpair, 0);
+            io_uring_nvme_process_completions(&worker->io_uring_ctx, 32);
             usleep(100);
         }
     }
@@ -350,9 +353,8 @@ void concurrency_manager_cleanup(struct concurrency_manager *cm) {
     for (uint32_t i = 0; i < cm->num_workers; i++) {
         struct worker_thread *worker = &cm->workers[i];
         
-        if (worker->qpair) {
-            spdk_nvme_ctrlr_free_io_qpair(worker->qpair);
-        }
+        // Cleanup io_uring context
+        io_uring_nvme_cleanup(&worker->io_uring_ctx);
         
         if (worker->operations) {
             free(worker->operations);
