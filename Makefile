@@ -28,8 +28,9 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 # Some libraries may not exist in all SPDK builds, removed missing ones
 # Note: spdk_keyring requires spdk_json, and spdk_nvme requires both for authentication
 # spdk_key functions are in spdk_keyring, not a separate library
-# Link order matters: dependencies must come after the libraries that use them
-SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
+# Link order matters: libspdk_log should come before libspdk_env_dpdk
+# as it may provide rte_log functions that env_dpdk needs
+SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
             -lspdk_util -lspdk_ioat \
             -lspdk_accel -lspdk_thread -lspdk_trace \
             -lspdk_keyring -lspdk_json
@@ -54,9 +55,10 @@ DPDK_LIBS = -Wl,-Bstatic \
 SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
 
 # Link order is critical:
-# Put DPDK and SPDK libraries in the same group to handle circular dependencies
+# Put ALL libraries (DPDK and SPDK) in the SAME group to handle circular dependencies
 # DPDK libraries need rte_log (provided by SPDK), SPDK env_dpdk needs DPDK functions
-# System libraries go last (outside the group)
+# The linker will iterate through all libraries in the group until all symbols are resolved
+# System libraries go last (outside the group, dynamic)
 LIBS = -Wl,-Bstatic \
        -Wl,--start-group \
        -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
