@@ -50,25 +50,17 @@ static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t 
     }
     
     // Check format: nvmeXnY where X is controller, Y is namespace
-    // Find the 'n' that separates controller from namespace (second 'n')
-    // nvme1n1 -> find the 'n' after the controller number
-    const char *n_pos = strchr(basename, 'n');
-    if (!n_pos || n_pos == basename) {
-        return -1;
-    }
-    
-    // Skip past "nvme" to find controller number
-    // n_pos points to first 'n' in "nvme", skip to after "nvme"
+    // Verify it starts with "nvme"
     if (strncmp(basename, "nvme", 4) != 0) {
         return -1;
     }
     
     // Find the 'n' that separates controller from namespace
-    // Start after "nvme" prefix
+    // Start after "nvme" prefix: "nvme1n1" -> "1n1"
     const char *p = basename + 4;  // Skip "nvme"
     
     // Find the 'n' separator (should be after controller number)
-    n_pos = strchr(p, 'n');
+    const char *n_pos = strchr(p, 'n');
     if (!n_pos) {
         return -1;
     }
@@ -76,8 +68,21 @@ static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t 
     // Extract controller part: /dev/nvme1
     // n_pos points to the separator 'n', so controller is everything before it
     size_t ctrl_len = n_pos - basename;
-    if (snprintf(ctrl_path, len, "/dev/%.*s", (int)ctrl_len, basename) >= (int)len) {
-        return -1;
+    
+    // Build full path: /dev/nvme1
+    const char *dir = strrchr(ns_path, '/');
+    if (dir) {
+        // Extract directory part (/dev) and controller name
+        size_t dir_len = dir - ns_path + 1;  // Include the '/'
+        if (snprintf(ctrl_path, len, "%.*s%.*s", 
+                     (int)dir_len, ns_path, (int)ctrl_len, basename) >= (int)len) {
+            return -1;
+        }
+    } else {
+        // No directory, just controller name
+        if (snprintf(ctrl_path, len, "%.*s", (int)ctrl_len, basename) >= (int)len) {
+            return -1;
+        }
     }
     
     return 0;
