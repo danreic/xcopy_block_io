@@ -490,14 +490,21 @@ int main(int argc, char **argv) {
         struct copy_range_descriptor ranges[MAX_COPY_RANGES];
         uint32_t num_ranges = 0;
         
-        if (range_generator_next(&range_gen, ranges, MAX_COPY_RANGES, &num_ranges) != 0) {
+        int range_ret = range_generator_next(&range_gen, ranges, MAX_COPY_RANGES, &num_ranges);
+        if (range_ret != 0) {
             // Reset generator if we've exhausted ranges
+            if (config.verbose && operations_submitted == 0) {
+                fprintf(stderr, "DEBUG: range_generator_next returned %d, resetting\n", range_ret);
+            }
             range_generator_reset(&range_gen);
             continue;
         }
         
         if (num_ranges == 0) {
             // No more ranges, reset and continue
+            if (config.verbose && operations_submitted == 0) {
+                fprintf(stderr, "DEBUG: num_ranges is 0, resetting generator\n");
+            }
             range_generator_reset(&range_gen);
             continue;
         }
@@ -510,8 +517,13 @@ int main(int argc, char **argv) {
         }
         
         // Submit operation
-        if (concurrency_manager_submit(&concurrency_mgr, &op) == 0) {
+        int submit_ret = concurrency_manager_submit(&concurrency_mgr, &op);
+        if (submit_ret == 0) {
             operations_submitted++;
+        } else {
+            if (config.verbose && operations_submitted < 3) {
+                fprintf(stderr, "DEBUG: concurrency_manager_submit returned %d\n", submit_ret);
+            }
         }
     }
     
