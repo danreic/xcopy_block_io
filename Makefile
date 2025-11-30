@@ -34,10 +34,14 @@ SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
             -lspdk_keyring -lspdk_json
 
 # DPDK libraries
-DPDK_LIBS = -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+# If DPDK is built as static libraries, we need to link statically
+# Use -Bstatic to force static linking for DPDK libraries
+DPDK_LIBS = -Wl,-Bstatic \
+            -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
             -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer \
-            -lrte_telemetry
+            -lrte_telemetry \
+            -Wl,-Bdynamic
 
 # System libraries (OpenSSL for crypto, etc.)
 SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
