@@ -343,15 +343,22 @@ int main(int argc, char **argv) {
         }
     }
     
+    // Verify connection succeeded
+    if (!nvme_ctx.connected) {
+        fprintf(stderr, "Error: Connection marked as failed (connected=%d)\n", nvme_ctx.connected);
+        nvme_wrapper_cleanup(&nvme_ctx);
+        return 1;
+    }
+    
     int ctrl_fd = nvme_wrapper_get_ctrl_fd(&nvme_ctx);
-    if (ctrl_fd < 0) {
-        fprintf(stderr, "No controller found\n");
+    if (ctrl_fd < 0 || ctrl_fd > 1000000) {
+        fprintf(stderr, "No controller found or invalid FD (ctrl_fd=%d)\n", ctrl_fd);
         nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
     if (config.verbose) {
-        printf("Connected to NVMe controller\n");
+        printf("Connected to NVMe controller (ctrl_fd=%d, connected=%d)\n", ctrl_fd, nvme_ctx.connected);
     }
     
     // Initialize volume manager

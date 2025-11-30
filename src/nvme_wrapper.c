@@ -404,9 +404,29 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                                  struct nvme_passthru_cmd *cmd,
                                  void *data,
                                  size_t data_len) {
-    if (!ctx || !ctx->connected || ctx->ctrl_fd < 0 || !cmd) {
-        fprintf(stderr, "nvme_wrapper_submit_passthru: Invalid arguments (ctx=%p, connected=%d, ctrl_fd=%d, cmd=%p)\n",
-                ctx, ctx ? ctx->connected : 0, ctx ? ctx->ctrl_fd : -1, cmd);
+    // Validate context thoroughly
+    if (!ctx) {
+        fprintf(stderr, "nvme_wrapper_submit_passthru: ctx is NULL\n");
+        return -EINVAL;
+    }
+    
+    if (!ctx->initialized) {
+        fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not initialized\n");
+        return -EINVAL;
+    }
+    
+    if (!ctx->connected) {
+        fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d)\n", ctx->connected);
+        return -EINVAL;
+    }
+    
+    if (ctx->ctrl_fd < 0 || ctx->ctrl_fd > 1000000) {  // Sanity check: valid FDs are small integers
+        fprintf(stderr, "nvme_wrapper_submit_passthru: Invalid ctrl_fd=%d (expected 0-1000000)\n", ctx->ctrl_fd);
+        return -EINVAL;
+    }
+    
+    if (!cmd) {
+        fprintf(stderr, "nvme_wrapper_submit_passthru: cmd is NULL\n");
         return -EINVAL;
     }
     
