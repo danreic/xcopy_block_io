@@ -1,0 +1,80 @@
+#include "xcopy_cmd.h"
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+
+int xcopy_cmd_build(struct xcopy_operation *op,
+                    uint32_t dst_nsid,
+                    struct copy_range_descriptor *ranges,
+                    uint32_t num_ranges) {
+    if (!op || !ranges || num_ranges == 0 || num_ranges > MAX_COPY_RANGES) {
+        return -EINVAL;
+    }
+    
+    // Clear command structure
+    memset(&op->cmd, 0, sizeof(op->cmd));
+    
+    // Set command opcode (NVMe Copy = 0x19)
+    op->cmd.opc = NVME_OPC_COPY;
+    
+    // Set destination namespace ID
+    op->cmd.nsid = dst_nsid;
+    op->dst_nsid = dst_nsid;
+    
+    // Set number of ranges (0-based, so num_ranges-1)
+    op->cmd.cdw10 = (num_ranges - 1) & 0xFFFF;
+    
+    // Copy range descriptors
+    memcpy(op->ranges, ranges, num_ranges * sizeof(struct copy_range_descriptor));
+    op->num_ranges = num_ranges;
+    
+    // Initialize operation state
+    op->completed = false;
+    op->status = 0;
+    op->start_time_us = 0;
+    op->user_data = NULL;
+    
+    return 0;
+}
+
+bool xcopy_cmd_validate_range(struct copy_range_descriptor *range,
+                              uint32_t src_nsid,
+                              uint64_t namespace_size) {
+    if (!range) {
+        return false;
+    }
+    
+    // Validate namespace ID matches
+    if (range->src_nsid != src_nsid) {
+        return false;
+    }
+    
+    // Validate number of blocks (0-based, so 0 = 1 block)
+    // Maximum is 0xFFFFFFFF which means 0x100000000 blocks
+    // But we'll use a more reasonable limit
+    if (range->num_blocks > 0x1000000) { // 16M blocks max
+        return false;
+    }
+    
+    // Calculate actual number of blocks (num_blocks is 0-based)
+    uint64_t actual_blocks = (uint64_t)range->num_blocks + 1;
+    
+    // Validate source LBA range
+    if (range->src_lba + actual_blocks > namespace_size) {
+        return false;
+    }
+    
+    // Validate destination LBA range
+    if (range->dst_lba + actual_blocks > namespace_size) {
+        return false;
+    }
+    
+    return true;
+}
+
+size_t xcopy_cmd_get_data_size(uint32_t num_ranges) {
+    // Each range descriptor is 32 bytes
+    // The command data contains the range descriptors
+    return num_ranges * sizeof(struct copy_range_descriptor);
+}
+
