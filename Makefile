@@ -2,7 +2,7 @@
 # Uses libnvme (Linux kernel NVMe library) instead of SPDK
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -g -std=c11
+CFLAGS = -Wall -Wextra -O2 -g -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
 LDFLAGS = -lpthread -lnuma
 
 # Include paths

@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <fcntl.h>
 #include <liburing.h>
 #include <sys/types.h>
 
