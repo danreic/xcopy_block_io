@@ -464,10 +464,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         }
         ioctl_cmd.data_len = data_len;
         
-        // Debug: Print first range descriptor from data buffer (only once)
+        // Debug: Print detailed information about data buffer (only once)
         static int range_data_debug_logged = 0;
         if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
-            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)data;
+            // Determine which buffer will actually be sent
+            void *buffer_to_send = data_copied ? aligned_data : data;
+            
+            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)buffer_to_send;
             // Note: Values are in little-endian format, so we need to convert back for display
             uint32_t src_nsid_le = first_range->src_nsid;
             uint64_t src_lba_le = first_range->src_lba;
@@ -475,6 +478,25 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
             uint64_t dst_lba_le = first_range->dst_lba;
             fprintf(stderr, "DEBUG: Range descriptor in data buffer (little-endian): src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
                     le32toh(src_nsid_le), le64toh(src_lba_le), le32toh(num_blocks_le), le64toh(dst_lba_le));
+            
+            if (data_copied) {
+                fprintf(stderr, "DEBUG: Using page-aligned buffer at %p (original was at %p)\n", 
+                        buffer_to_send, data);
+            } else {
+                fprintf(stderr, "DEBUG: Using original buffer at %p\n", buffer_to_send);
+            }
+            
+            // Hex dump of first 64 bytes (first 2 range descriptors) of the actual buffer being sent
+            fprintf(stderr, "DEBUG: Hex dump of buffer being sent to kernel (first 64 bytes):\n");
+            uint8_t *buffer_bytes = (uint8_t *)buffer_to_send;
+            for (int i = 0; i < 64 && i < (int)data_len; i += 16) {
+                fprintf(stderr, "  %04x: ", i);
+                for (int j = 0; j < 16 && (i + j) < (int)data_len; j++) {
+                    fprintf(stderr, "%02x ", buffer_bytes[i + j]);
+                }
+                fprintf(stderr, "\n");
+            }
+            
             range_data_debug_logged = 1;
         }
     } else {
@@ -497,6 +519,8 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
                 ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
                 ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
+        fprintf(stderr, "DEBUG: Command flags=0x%x, timeout_ms=%u, metadata_len=%u\n",
+                ioctl_cmd.flags, ioctl_cmd.timeout_ms, ioctl_cmd.metadata_len);
         debug_count++;
     }
     
@@ -540,11 +564,12 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         return -(int)status;
     }
     
-    // Debug: Log successful completion (only once)
+    // Debug: Log successful completion with detailed status
     static int success_logged = 0;
     if (!success_logged) {
-        fprintf(stderr, "DEBUG: NVMe command completed successfully (result=0x%x, status=0x%x)\n",
-                result, status);
+        fprintf(stderr, "DEBUG: NVMe command completed successfully (result=0x%x, status=0x%x, status_type=%u, status_code=0x%x)\n",
+                result, status, status_type, status_code);
+        fprintf(stderr, "DEBUG: Command was accepted by kernel/driver. Check server logs to verify if copy was executed.\n");
         success_logged = 1;
     }
     
