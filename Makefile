@@ -94,18 +94,21 @@ LIBS = -Wl,-Bstatic \
        -Wl,--start-group \
        -Wl,--whole-archive \
        -lspdk_env_dpdk \
+       -Wl,--no-whole-archive \
        -lspdk_log -lspdk_nvme \
+       -Wl,--whole-archive \
        $(SPDK_TCP_LIBS) \
+       -Wl,--no-whole-archive \
        -lspdk_nvmf -lspdk_event_nvmf \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
-       -lspdk_keyring -lspdk_json -lspdk_jsonrpc -lspdk_rpc \
-       -Wl,--no-whole-archive \
+       -lspdk_keyring -lspdk_json \
        -lrte_log -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
        -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer -lrte_telemetry \
        -Wl,--end-group \
        -Wl,-Bdynamic \
+       -lm \
        $(SYSTEM_LIBS)
 
 # Source files
