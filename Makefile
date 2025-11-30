@@ -35,9 +35,25 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 # spdk_key functions are in spdk_keyring, not a separate library
 # Link order matters: libspdk_log should come before libspdk_env_dpdk
 # as it may provide rte_log functions that env_dpdk needs
-# For TCP transport support, we need: spdk_nvme_tcp, spdk_sock, spdk_sock_posix
+# For TCP transport support: In some SPDK versions, TCP is built into libspdk_nvme
+# In others, separate libraries exist: spdk_nvme_tcp, spdk_sock, spdk_sock_posix
+# Check if TCP libraries exist and add them conditionally
+SPDK_TCP_LIBS = $(shell \
+	if [ -f "$(SPDK_LIB)/libspdk_nvme_tcp.a" ]; then \
+		echo "-lspdk_nvme_tcp"; \
+	fi \
+) $(shell \
+	if [ -f "$(SPDK_LIB)/libspdk_sock.a" ]; then \
+		echo "-lspdk_sock"; \
+	fi \
+) $(shell \
+	if [ -f "$(SPDK_LIB)/libspdk_sock_posix.a" ]; then \
+		echo "-lspdk_sock_posix"; \
+	fi \
+)
+
 SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
-            -lspdk_nvme_tcp -lspdk_sock -lspdk_sock_posix \
+            $(SPDK_TCP_LIBS) \
             -lspdk_util -lspdk_ioat \
             -lspdk_accel -lspdk_thread -lspdk_trace \
             -lspdk_keyring -lspdk_json
@@ -74,7 +90,7 @@ LIBS = -Wl,-Bstatic \
        -lspdk_env_dpdk \
        -Wl,--no-whole-archive \
        -lspdk_log -lspdk_nvme \
-       -lspdk_nvme_tcp -lspdk_sock -lspdk_sock_posix \
+       $(SPDK_TCP_LIBS) \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
        -lspdk_keyring -lspdk_json \
