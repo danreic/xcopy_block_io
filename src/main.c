@@ -429,11 +429,23 @@ int main(int argc, char **argv) {
     }
     
     // Initialize concurrency manager
+    // Debug: Print context state before passing to concurrency manager
+    if (config.verbose) {
+        printf("DEBUG: Before concurrency_manager_init: nvme_ctx=%p, connected=%d, ctrl_fd=%d, initialized=%d\n",
+               &nvme_ctx, nvme_ctx.connected, nvme_ctx.ctrl_fd, nvme_ctx.initialized);
+    }
+    
     if (concurrency_manager_init(&concurrency_mgr, &nvme_ctx, config.num_threads, config.queue_depth) != 0) {
         fprintf(stderr, "Failed to initialize concurrency manager\n");
         volume_manager_cleanup(&vol_mgr);
         nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
+    }
+    
+    // Debug: Verify context is still connected after init
+    if (config.verbose) {
+        printf("DEBUG: After concurrency_manager_init: nvme_ctx=%p, connected=%d, ctrl_fd=%d\n",
+               &nvme_ctx, nvme_ctx.connected, nvme_ctx.ctrl_fd);
     }
     
     // Start worker threads

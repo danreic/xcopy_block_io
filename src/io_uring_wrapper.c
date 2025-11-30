@@ -83,11 +83,13 @@ static void *worker_thread_func(void *arg) {
                 continue;
             }
             
-            // Debug: Check context state
+            // Debug: Check context state (only print once)
             static int ctx_debug_count = 0;
-            if (ctx_debug_count < 3) {
+            if (ctx_debug_count == 0) {
                 fprintf(stderr, "DEBUG: worker_thread: Using nvme_ctx=%p, connected=%d, ctrl_fd=%d, initialized=%d\n",
-                        op->nvme_ctx, op->nvme_ctx->connected, op->nvme_ctx->ctrl_fd, op->nvme_ctx->initialized);
+                        op->nvme_ctx, op->nvme_ctx ? op->nvme_ctx->connected : -1, 
+                        op->nvme_ctx ? op->nvme_ctx->ctrl_fd : -1, 
+                        op->nvme_ctx ? op->nvme_ctx->initialized : -1);
                 ctx_debug_count++;
             }
             

@@ -416,7 +416,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     if (!ctx->connected) {
-        fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d)\n", ctx->connected);
+        // Only print this error once to avoid flooding output
+        static int not_connected_logged = 0;
+        if (!not_connected_logged) {
+            fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d, ctx=%p, ctrl_fd=%d, initialized=%d)\n", 
+                    ctx->connected, ctx, ctx->ctrl_fd, ctx->initialized);
+            not_connected_logged = 1;
+        }
         return -EINVAL;
     }
     
