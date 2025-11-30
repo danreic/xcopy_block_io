@@ -132,7 +132,7 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
         snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
                  (int)(sizeof(ns_path) - 10), ctx->device_path, nsid);
         
-        int ns_fd = open(ns_path, O_RDONLY);
+        int ns_fd = open(ns_path, O_RDWR);
         if (ns_fd < 0) {
             break;
         }
@@ -280,7 +280,7 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
                  (int)(sizeof(ns_path) - 10), device_path, nsid);
         
-        int ns_fd = open(ns_path, O_RDONLY);
+        int ns_fd = open(ns_path, O_RDWR);
         if (ns_fd < 0) {
             // No more namespaces
             break;
@@ -478,27 +478,38 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // For NVMe-TCP, try using the controller FD first (like nvme-cli does)
-    // The namespace ID is specified in the command structure (cmd->nsid)
-    // For passthrough I/O commands over TCP, the controller device is typically used
-    int target_fd = ctx->ctrl_fd;
-    const char *fd_type = "ctrl_fd";
+    // For NVMe-TCP, try using the namespace FD with direct ioctl
+    // nvme-cli uses the namespace device for I/O commands
+    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    if (ns_fd < 0) {
+        static int ns_fd_error_count = 0;
+        if (ns_fd_error_count < 3) {
+            fprintf(stderr, "ERROR: Failed to get namespace FD for nsid=%u\n", nsid);
+            ns_fd_error_count++;
+        }
+        return -EINVAL;
+    }
     
     // Debug: Print command details (first few times only)
     static int debug_count = 0;
     if (debug_count < 3) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, %s=%d, data_len=%u, addr=%p\n",
-                ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
+        fprintf(stderr, "DEBUG: Submitting NVMe command via direct ioctl: opcode=0x%x, nsid=%u, ns_fd=%d, data_len=%u, addr=%p\n",
+                ioctl_cmd.opcode, ioctl_cmd.nsid, ns_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
         fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
                 ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
                 ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
         debug_count++;
     }
     
-    // Use libnvme's nvme_submit_io_passthru with controller FD (like nvme-cli)
+    // Use direct ioctl with namespace FD (like nvme-cli does for I/O commands)
     // This ensures commands are sent over TCP to the server
     __u32 result = 0;
-    int ret = nvme_submit_io_passthru(target_fd, &ioctl_cmd, &result);
+    int ret = ioctl(ns_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    if (ret == 0) {
+        result = ioctl_cmd.result;
+    } else {
+        ret = -errno;
+    }
     
     // Copy back data if we allocated an aligned buffer
     if (data_copied && data && data_len > 0) {
@@ -510,8 +521,8 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         // Log error for debugging
         static int error_log_count = 0;
         if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: nvme_submit_io_passthru failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
-                    strerror(-ret), -ret, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
+            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, ns_fd=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
+                    strerror(-ret), -ret, ns_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
         return ret;
