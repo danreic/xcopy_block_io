@@ -527,7 +527,17 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Use direct ioctl for I/O commands (like nvme-cli does)
     // NVME_IOCTL_IO_CMD is for I/O commands, NVME_IOCTL_ADMIN_CMD is for admin commands
     // Try namespace FD first (like nvme-cli), fall back to controller FD
+    // Debug: Log before ioctl call
+    static int ioctl_debug_count = 0;
+    if (ioctl_debug_count < 3) {
+        fprintf(stderr, "DEBUG: About to call ioctl(fd=%d, NVME_IOCTL_IO_CMD=0x%x, cmd=%p)\n",
+                target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+        ioctl_debug_count++;
+    }
     int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    if (ioctl_debug_count <= 3) {
+        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d)\n", ret, errno);
+    }
     
     // Copy back data if we allocated an aligned buffer
     if (data_copied && data && data_len > 0) {

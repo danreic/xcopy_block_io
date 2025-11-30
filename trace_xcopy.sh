@@ -27,8 +27,14 @@ echo "Test 2: Tracing our xcopy_tool..."
 echo "Command: sudo ./xcopy_tool --src-device $DEVICE --dst-device $DEVICE --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1"
 echo ""
 
-echo "--- xcopy_tool ioctl trace (first 50 lines) ---"
-sudo strace -e trace=ioctl -s 200 ./xcopy_tool --src-device "$DEVICE" --dst-device "$DEVICE" --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1 2>&1 | grep -A 5 -B 5 "ioctl\|NVME" | head -50
+echo "--- xcopy_tool ioctl trace (all ioctl calls) ---"
+sudo strace -e trace=ioctl -s 200 -o /tmp/xcopy_strace.log ./xcopy_tool --src-device "$DEVICE" --dst-device "$DEVICE" --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1 2>&1 | tail -20
+echo ""
+echo "--- Full strace ioctl output ---"
+grep "ioctl" /tmp/xcopy_strace.log | head -20
+echo ""
+echo "--- Looking for NVME_IOCTL_IO_CMD specifically ---"
+grep -E "NVME_IOCTL_IO_CMD|NVME_IOCTL_ADMIN_CMD" /tmp/xcopy_strace.log || echo "No NVME ioctl calls found in strace output"
 echo ""
 
 echo "=== Comparison ==="
