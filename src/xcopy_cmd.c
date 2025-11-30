@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <endian.h>
 
 int xcopy_cmd_build(struct xcopy_operation *op,
                     uint32_t dst_nsid,
@@ -35,8 +36,25 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     op->cmd.timeout_ms = 0;  // Use default timeout
     // Note: Data pointer (op->ranges) is passed separately to submit function
     
-    // Copy range descriptors
-    memcpy(op->ranges, ranges, num_ranges * sizeof(struct copy_range_descriptor));
+    // Copy range descriptors and convert to little-endian (NVMe spec requirement)
+    // Debug: Print first range descriptor (only once)
+    static int range_debug_logged = 0;
+    if (!range_debug_logged && num_ranges > 0) {
+        fprintf(stderr, "DEBUG: First range descriptor before conversion: src_nsid=%u, src_lba=%lu, num_blocks=%u, dst_lba=%lu\n",
+                ranges[0].src_nsid, ranges[0].src_lba, ranges[0].num_blocks, ranges[0].dst_lba);
+        range_debug_logged = 1;
+    }
+    
+    for (uint32_t i = 0; i < num_ranges; i++) {
+        op->ranges[i].rsvd0 = htole32(ranges[i].rsvd0);
+        op->ranges[i].src_nsid = htole32(ranges[i].src_nsid);
+        op->ranges[i].src_lba = htole64(ranges[i].src_lba);
+        op->ranges[i].rsvd1 = htole32(ranges[i].rsvd1);
+        op->ranges[i].num_blocks = htole32(ranges[i].num_blocks);
+        op->ranges[i].dst_lba = htole64(ranges[i].dst_lba);
+        op->ranges[i].rsvd2 = htole32(ranges[i].rsvd2);
+        op->ranges[i].rsvd3 = htole32(ranges[i].rsvd3);
+    }
     op->num_ranges = num_ranges;
     
     // Initialize operation state
