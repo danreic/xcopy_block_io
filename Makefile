@@ -37,7 +37,8 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib -L/usr/local/lib64
 # as it may provide rte_log functions that env_dpdk needs
 # For TCP transport support: In some SPDK versions, TCP is built into libspdk_nvme
 # In others, separate libraries exist: spdk_nvme_tcp, spdk_sock, spdk_sock_posix
-# Check if TCP libraries exist and add them conditionally
+# TCP transport requires socket libraries for initiator support
+# Always link socket libraries if they exist (required for TCP transport)
 SPDK_TCP_LIBS = $(shell \
 	if [ -f "$(SPDK_LIB)/libspdk_nvme_tcp.a" ]; then \
 		echo "-lspdk_nvme_tcp"; \
@@ -51,6 +52,8 @@ SPDK_TCP_LIBS = $(shell \
 		echo "-lspdk_sock_posix"; \
 	fi \
 )
+# Note: Even if libspdk_nvme_tcp.a doesn't exist, socket libraries may still be needed
+# because TCP initiator code is in libspdk_nvme.a and requires socket support
 
 SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
             $(SPDK_TCP_LIBS) \
