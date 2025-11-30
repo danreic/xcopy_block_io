@@ -405,6 +405,8 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                                  void *data,
                                  size_t data_len) {
     if (!ctx || !ctx->connected || ctx->ctrl_fd < 0 || !cmd) {
+        fprintf(stderr, "nvme_wrapper_submit_passthru: Invalid arguments (ctx=%p, connected=%d, ctrl_fd=%d, cmd=%p)\n",
+                ctx, ctx ? ctx->connected : 0, ctx ? ctx->ctrl_fd : -1, cmd);
         return -EINVAL;
     }
     
@@ -415,9 +417,24 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     struct nvme_passthru_cmd ioctl_cmd = *cmd;
     
     // Set data pointer if provided
+    // Note: The kernel may require page-aligned buffers for DMA
+    // For now, we'll try with the provided buffer and see if it works
     if (data && data_len > 0) {
+        // Check if buffer is page-aligned (common requirement for DMA)
+        long page_size = sysconf(_SC_PAGESIZE);
+        if (page_size > 0 && ((uintptr_t)data % page_size) != 0) {
+            static int alignment_warn_count = 0;
+            if (alignment_warn_count < 3) {
+                fprintf(stderr, "WARNING: Data buffer not page-aligned (addr=%p, page_size=%ld)\n",
+                        data, page_size);
+                alignment_warn_count++;
+            }
+        }
         ioctl_cmd.addr = (__u64)(uintptr_t)data;
         ioctl_cmd.data_len = data_len;
+    } else {
+        ioctl_cmd.addr = 0;
+        ioctl_cmd.data_len = 0;
     }
     
     // XCOPY is an I/O command (opcode 0x19)
@@ -425,14 +442,22 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // The namespace ID is specified in the command structure (cmd->nsid)
     // Namespace devices don't support NVME_IOCTL_IO_CMD directly
     
+    // Debug: Print command details (first few times only)
+    static int debug_count = 0;
+    if (debug_count < 3) {
+        fprintf(stderr, "DEBUG: Submitting NVMe command: opcode=0x%x, nsid=%u, ctrl_fd=%d, data_len=%zu, addr=%p\n",
+                ioctl_cmd.opcode, ioctl_cmd.nsid, ctx->ctrl_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
+        debug_count++;
+    }
+    
     __u32 result = 0;
     int ret = ioctl(ctx->ctrl_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     if (ret < 0) {
         // Log error for debugging
         static int error_log_count = 0;
-        if (error_log_count < 3) {
-            fprintf(stderr, "NVME_IOCTL_IO_CMD failed: %s (ctrl_fd=%d, opcode=0x%x, nsid=%u)\n",
-                    strerror(errno), ctx->ctrl_fd, cmd->opcode, nsid);
+        if (error_log_count < 5) {
+            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, ctrl_fd=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
+                    strerror(errno), errno, ctx->ctrl_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
         return -errno;
