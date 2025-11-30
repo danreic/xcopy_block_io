@@ -68,8 +68,11 @@ check-spdk-libs:
 	@ls -1 $(SPDK_LIB)/libspdk*.a 2>/dev/null | sed 's|.*/lib||; s|\.a$$||' | sort || echo "No libraries found"
 
 # Build the main executable
+# Add rpath so the binary can find libraries at runtime
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) -Wl,--as-needed
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
+		-Wl,--as-needed \
+		-Wl,-rpath,$(SPDK_LIB):$(DPDK_LIB):/usr/local/lib
 
 # Compile source files
 %.o: %.c
