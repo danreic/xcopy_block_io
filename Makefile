@@ -25,10 +25,11 @@ LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
 
 # SPDK libraries - need many more dependencies
 # Some libraries may not exist in all SPDK builds, removed missing ones
-# spdk_keyring removed as it requires spdk_json and is only needed for authentication
+# Note: spdk_keyring requires spdk_json, and spdk_nvme requires both for authentication
 SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
             -lspdk_util -lspdk_ioat \
-            -lspdk_accel -lspdk_thread -lspdk_trace
+            -lspdk_accel -lspdk_thread -lspdk_trace \
+            -lspdk_json -lspdk_key -lspdk_keyring
 
 # DPDK libraries
 DPDK_LIBS = -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
