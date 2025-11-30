@@ -93,6 +93,14 @@ check-spdk-libs:
 	@echo "Checking SPDK libraries in $(SPDK_LIB):"
 	@ls -1 $(SPDK_LIB)/libspdk*.a 2>/dev/null | sed 's|.*/lib||; s|\.a$$||' | sort || echo "No libraries found"
 
+# Check if libspdk_env_dpdk provides rte_log (for debugging)
+check-rte-log:
+	@echo "Checking for rte_log in libspdk_env_dpdk:"
+	@nm $(SPDK_LIB)/libspdk_env_dpdk.a 2>/dev/null | grep -E "rte_log|rte_vlog" | head -5 || echo "rte_log not found in libspdk_env_dpdk"
+	@echo ""
+	@echo "Checking for rte_log in libspdk_log:"
+	@nm $(SPDK_LIB)/libspdk_log.a 2>/dev/null | grep -E "rte_log|rte_vlog" | head -5 || echo "rte_log not found in libspdk_log"
+
 # Build the main executable
 # Add rpath so the binary can find libraries at runtime
 $(TARGET): $(OBJECTS)
