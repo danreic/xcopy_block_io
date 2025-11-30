@@ -22,9 +22,11 @@ INCLUDES = -I$(SPDK_INC) -I$(DPDK_INC) -Iinclude
 
 # Library paths and libraries
 LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
+# DPDK libraries - some may not exist in all versions, linker will skip missing ones with --as-needed
+# Note: -ldpdk and -lrte_malloc may not exist, removed them
 LIBS = -lspdk_nvme -lspdk_env_dpdk -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci -lrte_kvargs -lrte_hash \
-       -lrte_cmdline -lrte_malloc -lrte_timer -lrte_telemetry -ldpdk
+       -lrte_cmdline -lrte_timer -lrte_telemetry
 
 # Source files
 SRCDIR = src
@@ -46,7 +48,7 @@ all: $(TARGET)
 
 # Build the main executable
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) -Wl,--no-as-needed
 
 # Compile source files
 %.o: %.c
