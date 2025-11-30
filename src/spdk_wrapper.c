@@ -105,12 +105,12 @@ int spdk_wrapper_probe_attach(struct spdk_context *ctx,
             // This will help diagnose if SPDK was built with TCP support
             {
                 const char *tcp_name = spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_TCP);
-                if (!tcp_name || strcmp(tcp_name, "Unknown") == 0) {
-                    fprintf(stderr, "Error: NVMe TCP transport is not available in this SPDK build\n");
-                    fprintf(stderr, "  SPDK must be rebuilt with TCP transport support\n");
-                    fprintf(stderr, "  TCP transport should be enabled by default in SPDK\n");
-                    fprintf(stderr, "  Try: cd /usr/local/src/spdk && ./configure && make -j$(nproc)\n");
-                    return -ENOTSUP;
+                if (tcp_name && strcmp(tcp_name, "Unknown") != 0) {
+                    // TCP transport name is available, so it should be supported
+                    // The error will come from probe if it's not actually available
+                } else {
+                    fprintf(stderr, "Warning: Could not verify TCP transport availability\n");
+                    fprintf(stderr, "  Attempting probe anyway - error will indicate if TCP is missing\n");
                 }
             }
             if (transport->traddr) {

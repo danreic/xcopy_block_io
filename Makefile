@@ -54,6 +54,7 @@ SPDK_TCP_LIBS = $(shell \
 
 SPDK_LIBS = -lspdk_log -lspdk_env_dpdk -lspdk_nvme \
             $(SPDK_TCP_LIBS) \
+            -lspdk_nvmf -lspdk_event_nvmf \
             -lspdk_util -lspdk_ioat \
             -lspdk_accel -lspdk_thread -lspdk_trace \
             -lspdk_keyring -lspdk_json
@@ -91,6 +92,7 @@ LIBS = -Wl,-Bstatic \
        -Wl,--no-whole-archive \
        -lspdk_log -lspdk_nvme \
        $(SPDK_TCP_LIBS) \
+       -lspdk_nvmf -lspdk_event_nvmf \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
        -lspdk_keyring -lspdk_json \
