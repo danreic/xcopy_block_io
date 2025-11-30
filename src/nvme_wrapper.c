@@ -420,10 +420,21 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         ioctl_cmd.data_len = data_len;
     }
     
-    // XCOPY is an I/O command (opcode 0x19), use IO_CMD
+    // XCOPY is an I/O command (opcode 0x19)
+    // I/O commands should use the namespace file descriptor, not controller
+    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    int fd_to_use = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    
     __u32 result = 0;
-    int ret = ioctl(ctx->ctrl_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    int ret = ioctl(fd_to_use, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     if (ret < 0) {
+        // Log error for debugging
+        static int error_log_count = 0;
+        if (error_log_count < 3) {
+            fprintf(stderr, "NVME_IOCTL_IO_CMD failed: %s (fd=%d, opcode=0x%x, nsid=%u)\n",
+                    strerror(errno), fd_to_use, cmd->opcode, nsid);
+            error_log_count++;
+        }
         return -errno;
     }
     
@@ -433,6 +444,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Status code is in bits 15:1, phase bit is bit 0
     __u16 status = (result >> 1) & 0x7FFF;
     if (status != 0) {
+        // Log status for debugging
+        static int status_log_count = 0;
+        if (status_log_count < 3) {
+            fprintf(stderr, "NVMe command returned non-zero status: 0x%x (result=0x%x)\n",
+                    status, result);
+            status_log_count++;
+        }
         return -(int)status;
     }
     

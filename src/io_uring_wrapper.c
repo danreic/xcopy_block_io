@@ -81,7 +81,9 @@ static void *worker_thread_func(void *arg) {
             
             // Call completion callback
             if (op->cb) {
-                uint32_t status = (result == 0) ? 0 : (uint32_t)-result;
+                // result is negative on error, positive or zero on success
+                // status should be the NVMe status code
+                uint32_t status = (result < 0) ? (uint32_t)-result : 0;
                 op->cb(op->user_data, result, status);
             }
             

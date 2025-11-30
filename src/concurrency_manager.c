@@ -32,6 +32,12 @@ static void xcopy_completion_cb(void *user_data, int result, uint32_t status) {
     if (result != 0 || status != 0) {
         worker->ops_failed++;
         op->status = -1;
+        // Print first few errors for debugging
+        static uint32_t error_count = 0;
+        if (error_count < 5) {
+            fprintf(stderr, "XCOPY operation failed: result=%d, status=0x%x\n", result, status);
+            error_count++;
+        }
     } else {
         worker->ops_completed++;
         op->status = 0;
