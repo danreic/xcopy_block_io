@@ -102,7 +102,7 @@ LIBS = -Wl,-Bstatic \
        -lspdk_nvmf -lspdk_event_nvmf \
        -lspdk_util -lspdk_ioat \
        -lspdk_accel -lspdk_thread -lspdk_trace \
-       -lspdk_keyring -lspdk_json \
+       -lspdk_keyring -lspdk_json -lspdk_jsonrpc -lspdk_rpc \
        -lrte_log -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
        -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
        -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer -lrte_telemetry \
