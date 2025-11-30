@@ -95,8 +95,9 @@ LIBS = -Wl,-Bstatic \
        -Wl,--whole-archive \
        -lspdk_env_dpdk \
        -Wl,--no-whole-archive \
-       -lspdk_log -lspdk_nvme \
+       -lspdk_log \
        -Wl,--whole-archive \
+       -lspdk_nvme \
        $(SPDK_TCP_LIBS) \
        -Wl,--no-whole-archive \
        -lspdk_nvmf -lspdk_event_nvmf \
