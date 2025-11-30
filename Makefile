@@ -24,11 +24,10 @@ INCLUDES = -I$(SPDK_INC) -I$(DPDK_INC) -Iinclude
 LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
 
 # SPDK libraries - need many more dependencies
+# Some libraries may not exist in all SPDK builds, removed missing ones
 SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
-            -lspdk_util -lspdk_string -lspdk_uuid -lspdk_bit_array \
-            -lspdk_fd_group -lspdk_key -lspdk_keyring -lspdk_crc32 \
-            -lspdk_memory -lspdk_ioat -lspdk_idxd -lspdk_accel \
-            -lspdk_scheduler -lspdk_thread -lspdk_trace
+            -lspdk_util -lspdk_keyring -lspdk_ioat \
+            -lspdk_accel -lspdk_thread -lspdk_trace
 
 # DPDK libraries
 DPDK_LIBS = -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
