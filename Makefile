@@ -11,6 +11,18 @@ SPDK_INC = $(SPDK_ROOT)/include
 # Check for build/lib first (if SPDK was built but not installed), then lib
 SPDK_LIB = $(shell if [ -d "$(SPDK_ROOT)/build/lib" ]; then echo "$(SPDK_ROOT)/build/lib"; else echo "$(SPDK_ROOT)/lib"; fi)
 
+# Try to use SPDK's pkg-config if available (recommended)
+PKG_CONFIG ?= pkg-config
+SPDK_PKG_CONFIG = $(shell $(PKG_CONFIG) --exists spdk_env_dpdk && echo "yes" || echo "no")
+ifeq ($(SPDK_PKG_CONFIG),yes)
+    # Use pkg-config to get SPDK linking flags
+    SPDK_CFLAGS = $(shell $(PKG_CONFIG) --cflags spdk_env_dpdk spdk_nvme)
+    SPDK_LIBS_PKG = $(shell $(PKG_CONFIG) --libs spdk_env_dpdk spdk_nvme)
+    USE_PKG_CONFIG = 1
+else
+    USE_PKG_CONFIG = 0
+endif
+
 # DPDK paths - adjust these based on your DPDK installation
 DPDK_ROOT ?= /usr/local
 DPDK_INC = $(DPDK_ROOT)/include
