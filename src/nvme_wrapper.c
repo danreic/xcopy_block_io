@@ -443,20 +443,24 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     struct nvme_passthru_cmd ioctl_cmd = *cmd;
     
     // Set data pointer if provided
-    // Note: The kernel may require page-aligned buffers for DMA
-    // For now, we'll try with the provided buffer and see if it works
+    // For NVMe-TCP, buffers must be page-aligned for DMA operations
+    void *aligned_data = NULL;
+    bool data_copied = false;
+    
     if (data && data_len > 0) {
-        // Check if buffer is page-aligned (common requirement for DMA)
         long page_size = sysconf(_SC_PAGESIZE);
         if (page_size > 0 && ((uintptr_t)data % page_size) != 0) {
-            static int alignment_warn_count = 0;
-            if (alignment_warn_count < 3) {
-                fprintf(stderr, "WARNING: Data buffer not page-aligned (addr=%p, page_size=%ld)\n",
-                        data, page_size);
-                alignment_warn_count++;
+            // Allocate page-aligned buffer and copy data
+            if (posix_memalign(&aligned_data, page_size, data_len) != 0) {
+                fprintf(stderr, "Error: Failed to allocate page-aligned memory for data\n");
+                return -ENOMEM;
             }
+            memcpy(aligned_data, data, data_len);
+            ioctl_cmd.addr = (__u64)(uintptr_t)aligned_data;
+            data_copied = true;
+        } else {
+            ioctl_cmd.addr = (__u64)(uintptr_t)data;
         }
-        ioctl_cmd.addr = (__u64)(uintptr_t)data;
         ioctl_cmd.data_len = data_len;
     } else {
         ioctl_cmd.addr = 0;
@@ -490,6 +494,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     
     // Use libnvme's nvme_submit_io_passthru which handles TCP correctly
     int ret = nvme_submit_io_passthru(ns_fd, &ioctl_cmd, &result);
+    
+    // Copy back data if we allocated an aligned buffer
+    if (data_copied && data && data_len > 0) {
+        memcpy(data, aligned_data, data_len);
+        free(aligned_data);
+    }
+    
     if (ret < 0) {
         // Log error for debugging
         static int error_log_count = 0;
