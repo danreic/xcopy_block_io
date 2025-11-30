@@ -124,13 +124,27 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         }
         
         // Get namespace size using ioctl
+        // Use nvme_passthru_cmd for admin commands
         struct nvme_id_ns ns_id;
-        struct nvme_admin_cmd admin_cmd = {
-            .opcode = nvme_admin_identify,
+        struct nvme_passthru_cmd admin_cmd = {
+            .opcode = 0x06,  // NVME_ADMIN_IDENTIFY
+            .flags = 0,
+            .rsvd1 = 0,
             .nsid = nsid,
+            .cdw2 = 0,
+            .cdw3 = 0,
+            .metadata = 0,
             .addr = (__u64)(uintptr_t)&ns_id,
+            .metadata_len = 0,
             .data_len = sizeof(ns_id),
             .cdw10 = 0,  // CNS = 0 (identify namespace)
+            .cdw11 = 0,
+            .cdw12 = 0,
+            .cdw13 = 0,
+            .cdw14 = 0,
+            .cdw15 = 0,
+            .timeout_ms = 0,
+            .result = 0,
         };
         
         if (ioctl(ctx->ctrl_fd, NVME_IOCTL_ADMIN_CMD, &admin_cmd) == 0) {
