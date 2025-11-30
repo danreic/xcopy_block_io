@@ -49,13 +49,32 @@ static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t 
         basename++;
     }
     
-    // Find 'n' that separates controller from namespace
+    // Check format: nvmeXnY where X is controller, Y is namespace
+    // Find the 'n' that separates controller from namespace (second 'n')
+    // nvme1n1 -> find the 'n' after the controller number
     const char *n_pos = strchr(basename, 'n');
     if (!n_pos || n_pos == basename) {
         return -1;
     }
     
+    // Skip past "nvme" to find controller number
+    // n_pos points to first 'n' in "nvme", skip to after "nvme"
+    if (strncmp(basename, "nvme", 4) != 0) {
+        return -1;
+    }
+    
+    // Find the 'n' that separates controller from namespace
+    // Start after "nvme" prefix
+    const char *p = basename + 4;  // Skip "nvme"
+    
+    // Find the 'n' separator (should be after controller number)
+    n_pos = strchr(p, 'n');
+    if (!n_pos) {
+        return -1;
+    }
+    
     // Extract controller part: /dev/nvme1
+    // n_pos points to the separator 'n', so controller is everything before it
     size_t ctrl_len = n_pos - basename;
     if (snprintf(ctrl_path, len, "/dev/%.*s", (int)ctrl_len, basename) >= (int)len) {
         return -1;
