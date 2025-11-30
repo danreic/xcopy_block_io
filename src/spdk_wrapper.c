@@ -56,6 +56,13 @@ int spdk_wrapper_init(struct spdk_context *ctx,
     // For XCOPY operations, we don't need huge amounts of memory
     ctx->opts.mem_size = 512;  // 512 MB should be sufficient
     
+    // Set hugepage directory explicitly (may help with permissions)
+    // This allows the user to set HUGE_PAGE_DIR environment variable if needed
+    const char *hugepage_dir = getenv("HUGE_PAGE_DIR");
+    if (hugepage_dir) {
+        ctx->opts.hugedir = hugepage_dir;
+    }
+    
     // Initialize SPDK environment
     if (spdk_env_init(&ctx->opts) < 0) {
         fprintf(stderr, "Failed to initialize SPDK environment\n");
