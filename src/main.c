@@ -421,6 +421,12 @@ int main(int argc, char **argv) {
     workload.num_ranges = config.num_ranges;
     workload.namespace_size = src_vol->size_blocks;
     
+    if (config.verbose) {
+        printf("DEBUG: Initializing range generator: num_ranges=%u, range_size=%lu, src_lba=%lu, dst_lba=%lu, namespace_size=%lu\n",
+               workload.num_ranges, workload.range_size, workload.src_lba_start, 
+               workload.dst_lba_start, workload.namespace_size);
+    }
+    
     if (range_generator_init(&range_gen, &workload) != 0) {
         fprintf(stderr, "Failed to initialize range generator\n");
         volume_manager_cleanup(&vol_mgr);
@@ -493,8 +499,10 @@ int main(int argc, char **argv) {
         int range_ret = range_generator_next(&range_gen, ranges, MAX_COPY_RANGES, &num_ranges);
         if (range_ret != 0) {
             // Reset generator if we've exhausted ranges
-            if (config.verbose && operations_submitted == 0) {
-                fprintf(stderr, "DEBUG: range_generator_next returned %d, resetting\n", range_ret);
+            static int range_error_logged = 0;
+            if (config.verbose && !range_error_logged) {
+                fprintf(stderr, "ERROR: range_generator_next returned %d\n", range_ret);
+                range_error_logged = 1;
             }
             range_generator_reset(&range_gen);
             continue;
@@ -502,8 +510,11 @@ int main(int argc, char **argv) {
         
         if (num_ranges == 0) {
             // No more ranges, reset and continue
-            if (config.verbose && operations_submitted == 0) {
-                fprintf(stderr, "DEBUG: num_ranges is 0, resetting generator\n");
+            static int zero_ranges_logged = 0;
+            if (config.verbose && !zero_ranges_logged) {
+                fprintf(stderr, "ERROR: range_generator_next returned 0 ranges (current_range=%u, workload.num_ranges=%u)\n",
+                        range_gen.current_range, range_gen.workload.num_ranges);
+                zero_ranges_logged = 1;
             }
             range_generator_reset(&range_gen);
             continue;
@@ -512,7 +523,11 @@ int main(int argc, char **argv) {
         // Build and submit operation
         struct xcopy_operation op;
         if (xcopy_cmd_build(&op, config.dst_nsid, ranges, num_ranges) != 0) {
-            fprintf(stderr, "Failed to build command\n");
+            static int build_error_logged = 0;
+            if (config.verbose && !build_error_logged) {
+                fprintf(stderr, "ERROR: xcopy_cmd_build failed (num_ranges=%u)\n", num_ranges);
+                build_error_logged = 1;
+            }
             continue;
         }
         
@@ -521,8 +536,10 @@ int main(int argc, char **argv) {
         if (submit_ret == 0) {
             operations_submitted++;
         } else {
-            if (config.verbose && operations_submitted < 3) {
-                fprintf(stderr, "DEBUG: concurrency_manager_submit returned %d\n", submit_ret);
+            static int submit_error_logged = 0;
+            if (config.verbose && !submit_error_logged) {
+                fprintf(stderr, "ERROR: concurrency_manager_submit returned %d\n", submit_ret);
+                submit_error_logged = 1;
             }
         }
     }
