@@ -505,9 +505,16 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // For NVMe-TCP, try namespace FD first (like nvme-cli does)
-    // If that doesn't work, fall back to controller FD
+    // For NVMe-TCP, nvme-cli uses the namespace FD directly
+    // Try namespace FD first (like nvme-cli), but if server doesn't see it, try controller FD
     int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    // Debug: Check which FD we're using
+    static int fd_debug_count = 0;
+    if (fd_debug_count < 3) {
+        fprintf(stderr, "DEBUG: ns_fd=%d, ctrl_fd=%d, will use %s\n",
+                ns_fd, ctx->ctrl_fd, (ns_fd >= 0) ? "ns_fd" : "ctrl_fd");
+        fd_debug_count++;
+    }
     int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
     const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
     
@@ -519,8 +526,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
                 ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
                 ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
-        fprintf(stderr, "DEBUG: Command flags=0x%x, timeout_ms=%u, metadata_len=%u\n",
-                ioctl_cmd.flags, ioctl_cmd.timeout_ms, ioctl_cmd.metadata_len);
+        fprintf(stderr, "DEBUG: Command flags=0x%x, timeout_ms=%u, metadata_len=%u, rsvd1=%u\n",
+                ioctl_cmd.flags, ioctl_cmd.timeout_ms, ioctl_cmd.metadata_len, ioctl_cmd.rsvd1);
+        // Hex dump of command structure (first 64 bytes to see the structure)
+        fprintf(stderr, "DEBUG: Command structure hex dump (first 64 bytes):\n");
+        uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
+        for (int i = 0; i < 64 && i < (int)sizeof(ioctl_cmd); i += 16) {
+            fprintf(stderr, "  %04x: ", i);
+            for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
+                fprintf(stderr, "%02x ", cmd_bytes[i + j]);
+            }
+            fprintf(stderr, "\n");
+        }
         debug_count++;
     }
     
@@ -534,9 +551,14 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                 target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
         ioctl_debug_count++;
     }
+    // For NVME_IOCTL_IO_CMD, the kernel expects the command structure to be properly formatted
+    // Make sure all fields are set correctly before the ioctl call
     int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     if (ioctl_debug_count <= 3) {
-        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d)\n", ret, errno);
+        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d, expected 0 for success or -1 for error)\n", ret, errno);
+        if (ret != 0 && ret != -1) {
+            fprintf(stderr, "WARNING: ioctl returned unexpected value %d (not 0 or -1)\n", ret);
+        }
     }
     
     // Copy back data if we allocated an aligned buffer
@@ -556,6 +578,8 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         return -errno;
     }
     
+    // For NVME_IOCTL_IO_CMD, a return value of 0 means success
+    // The actual command result is in ioctl_cmd.result
     // Check result - result contains status field
     // Status code is in bits 15:1, phase bit is bit 0
     __u32 result = ioctl_cmd.result;
