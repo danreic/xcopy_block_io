@@ -143,6 +143,10 @@ int concurrency_manager_init(struct concurrency_manager *cm,
         worker->thread_id = i;
         worker->nvme_ctx = nvme_ctx;
         
+        // Debug: Print what we just stored
+        fprintf(stderr, "DEBUG: concurrency_manager_init: Worker %u: stored nvme_ctx=%p (expected=%p), connected=%d\n",
+                i, worker->nvme_ctx, nvme_ctx, worker->nvme_ctx ? worker->nvme_ctx->connected : -1);
+        
         // Verify the pointer is correct
         if (worker->nvme_ctx != nvme_ctx || !worker->nvme_ctx->connected) {
             fprintf(stderr, "ERROR: Worker %u: nvme_ctx mismatch (stored=%p, expected=%p, connected=%d)\n",
@@ -276,6 +280,15 @@ int concurrency_manager_submit(struct concurrency_manager *cm,
     // Prepare command data (range descriptors)
     size_t data_size = xcopy_cmd_get_data_size(queued_op->num_ranges);
     void *data = queued_op->ranges;
+    
+    // Debug: Check worker context before submitting
+    static int submit_debug_count = 0;
+    if (submit_debug_count < 3) {
+        fprintf(stderr, "DEBUG: concurrency_manager_submit: worker->nvme_ctx=%p, connected=%d, ctrl_fd=%d\n",
+                worker->nvme_ctx, worker->nvme_ctx ? worker->nvme_ctx->connected : -1,
+                worker->nvme_ctx ? worker->nvme_ctx->ctrl_fd : -1);
+        submit_debug_count++;
+    }
     
     // Submit command via io_uring (async)
     int rc = io_uring_nvme_submit_passthru(&worker->io_uring_ctx,
