@@ -22,11 +22,24 @@ INCLUDES = -I$(SPDK_INC) -I$(DPDK_INC) -Iinclude
 
 # Library paths and libraries
 LIBPATHS = -L$(SPDK_LIB) -L$(DPDK_LIB) -L/usr/local/lib
-# DPDK libraries - some may not exist in all versions, linker will skip missing ones with --as-needed
-# Note: -ldpdk and -lrte_malloc may not exist, removed them
-LIBS = -lspdk_nvme -lspdk_env_dpdk -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
-       -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci -lrte_kvargs -lrte_hash \
-       -lrte_cmdline -lrte_timer -lrte_telemetry
+
+# SPDK libraries - need many more dependencies
+SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log \
+            -lspdk_util -lspdk_string -lspdk_uuid -lspdk_bit_array \
+            -lspdk_fd_group -lspdk_key -lspdk_keyring -lspdk_crc32 \
+            -lspdk_memory -lspdk_ioat -lspdk_idxd -lspdk_accel \
+            -lspdk_scheduler -lspdk_thread -lspdk_trace
+
+# DPDK libraries
+DPDK_LIBS = -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+            -lrte_net -lrte_ethdev -lrte_pci -lrte_bus_pci \
+            -lrte_kvargs -lrte_hash -lrte_cmdline -lrte_timer \
+            -lrte_telemetry
+
+# System libraries (OpenSSL for crypto, etc.)
+SYSTEM_LIBS = -lssl -lcrypto -ljson-c -luuid -ldl
+
+LIBS = $(SPDK_LIBS) $(DPDK_LIBS) $(SYSTEM_LIBS)
 
 # Source files
 SRCDIR = src
