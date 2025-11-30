@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <spdk/nvme.h>
 #include "xcopy_cmd.h"
+#include "xcopy_tool.h"
 
 // Thread context for worker threads
 struct worker_thread {
