@@ -130,11 +130,25 @@ int concurrency_manager_init(struct concurrency_manager *cm,
     }
     
     // Initialize each worker thread
+    // Verify context is connected before passing to workers
+    if (!nvme_ctx || !nvme_ctx->connected) {
+        fprintf(stderr, "ERROR: concurrency_manager_init: nvme_ctx not connected (ctx=%p, connected=%d)\n",
+                nvme_ctx, nvme_ctx ? nvme_ctx->connected : 0);
+        return -EINVAL;
+    }
+    
     for (uint32_t i = 0; i < cm->num_workers; i++) {
         struct worker_thread *worker = &cm->workers[i];
         
         worker->thread_id = i;
         worker->nvme_ctx = nvme_ctx;
+        
+        // Verify the pointer is correct
+        if (worker->nvme_ctx != nvme_ctx || !worker->nvme_ctx->connected) {
+            fprintf(stderr, "ERROR: Worker %u: nvme_ctx mismatch (stored=%p, expected=%p, connected=%d)\n",
+                    i, worker->nvme_ctx, nvme_ctx, worker->nvme_ctx ? worker->nvme_ctx->connected : 0);
+            return -EINVAL;
+        }
         
         // Initialize io_uring context
         int ret = io_uring_nvme_init(&worker->io_uring_ctx, queue_depth);

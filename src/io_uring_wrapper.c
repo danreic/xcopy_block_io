@@ -72,6 +72,25 @@ static void *worker_thread_func(void *arg) {
         pthread_mutex_unlock(&ctx->queue_mutex);
         
         if (op) {
+            // Verify context is valid before using it
+            if (!op->nvme_ctx) {
+                fprintf(stderr, "ERROR: worker_thread: op->nvme_ctx is NULL\n");
+                if (op->cb) {
+                    op->cb(op->user_data, -EINVAL, EINVAL);
+                }
+                atomic_store(&op->completed, true);
+                free(op);
+                continue;
+            }
+            
+            // Debug: Check context state
+            static int ctx_debug_count = 0;
+            if (ctx_debug_count < 3) {
+                fprintf(stderr, "DEBUG: worker_thread: Using nvme_ctx=%p, connected=%d, ctrl_fd=%d, initialized=%d\n",
+                        op->nvme_ctx, op->nvme_ctx->connected, op->nvme_ctx->ctrl_fd, op->nvme_ctx->initialized);
+                ctx_debug_count++;
+            }
+            
             // Execute the synchronous libnvme call
             int result = nvme_wrapper_submit_passthru(op->nvme_ctx,
                                                        op->nsid,
@@ -266,6 +285,14 @@ int io_uring_nvme_submit_passthru(struct io_uring_nvme_ctx *ctx,
     op->cb = cb;
     op->user_data = user_data;
     atomic_store(&op->completed, false);
+    
+    // Debug: Verify context is connected when storing it
+    static int debug_count = 0;
+    if (debug_count < 3 && (!op->nvme_ctx || !op->nvme_ctx->connected)) {
+        fprintf(stderr, "WARNING: io_uring_nvme_submit_passthru: Storing unconnected context (ctx=%p, connected=%d)\n",
+                op->nvme_ctx, op->nvme_ctx ? op->nvme_ctx->connected : 0);
+        debug_count++;
+    }
     
     // Add to work queue
     pthread_mutex_lock(&ext->queue_mutex);
