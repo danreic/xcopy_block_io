@@ -9,11 +9,15 @@
 // Probe callback for controller attachment
 static bool probe_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
                      struct spdk_nvme_ctrlr_opts *opts) {
-    (void)opts;  // Unused parameter
     struct spdk_context *ctx = (struct spdk_context *)cb_ctx;
     
     // Copy transport ID for later use
     memcpy(&ctx->trid, trid, sizeof(*trid));
+    
+    // Set controller options size explicitly (required by some SPDK versions)
+    if (opts) {
+        opts->opts_size = sizeof(*opts);
+    }
     
     return true;
 }
@@ -39,6 +43,18 @@ int spdk_wrapper_init(struct spdk_context *ctx,
     // Initialize SPDK environment options
     spdk_env_opts_init(&ctx->opts);
     ctx->opts.name = "xcopy_tool";
+    
+    // Set opts_size explicitly (required by some SPDK versions)
+    ctx->opts.opts_size = sizeof(ctx->opts);
+    
+    // Configure hugepages - use 2MB pages and allow automatic allocation
+    // If hugepages are not available, SPDK will fall back to regular pages
+    ctx->opts.hugepage_single_segments = false;
+    ctx->opts.unlink_hugepage = false;
+    
+    // Set memory pool size (in MB) - adjust based on your needs
+    // For XCOPY operations, we don't need huge amounts of memory
+    ctx->opts.mem_size = 512;  // 512 MB should be sufficient
     
     // Initialize SPDK environment
     if (spdk_env_init(&ctx->opts) < 0) {
