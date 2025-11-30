@@ -421,18 +421,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // I/O commands should use the namespace file descriptor, not controller
-    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
-    int fd_to_use = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    // I/O commands must use the controller file descriptor, not namespace device
+    // The namespace ID is specified in the command structure (cmd->nsid)
+    // Namespace devices don't support NVME_IOCTL_IO_CMD directly
     
     __u32 result = 0;
-    int ret = ioctl(fd_to_use, NVME_IOCTL_IO_CMD, &ioctl_cmd);
+    int ret = ioctl(ctx->ctrl_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     if (ret < 0) {
         // Log error for debugging
         static int error_log_count = 0;
         if (error_log_count < 3) {
-            fprintf(stderr, "NVME_IOCTL_IO_CMD failed: %s (fd=%d, opcode=0x%x, nsid=%u)\n",
-                    strerror(errno), fd_to_use, cmd->opcode, nsid);
+            fprintf(stderr, "NVME_IOCTL_IO_CMD failed: %s (ctrl_fd=%d, opcode=0x%x, nsid=%u)\n",
+                    strerror(errno), ctx->ctrl_fd, cmd->opcode, nsid);
             error_log_count++;
         }
         return -errno;
