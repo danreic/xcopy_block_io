@@ -129,7 +129,6 @@ int concurrency_manager_init(struct concurrency_manager *cm,
         
         worker->thread_id = i;
         worker->nvme_ctx = nvme_ctx;
-        worker->ctrl = nvme_wrapper_get_ctrl(nvme_ctx);
         
         // Initialize io_uring context
         int ret = io_uring_nvme_init(&worker->io_uring_ctx, queue_depth);

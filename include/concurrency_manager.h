@@ -20,7 +20,6 @@ struct worker_thread {
     uint32_t thread_id;
     struct io_uring_nvme_ctx io_uring_ctx;  // io_uring context for async I/O
     struct nvme_context *nvme_ctx;          // NVMe context
-    struct nvme_ctrl *ctrl;                 // libnvme controller
     
     // Operation queue
     struct xcopy_operation *operations;

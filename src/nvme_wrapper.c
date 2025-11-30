@@ -115,7 +115,8 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
     ctx->num_ns = 0;
     for (uint32_t nsid = 1; nsid <= 256; nsid++) {
         char ns_path[64];
-        snprintf(ns_path, sizeof(ns_path), "%sn%d", device_path, nsid);
+        snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
+                 (int)(sizeof(ns_path) - 10), device_path, nsid);
         
         int ns_fd = open(ns_path, O_RDONLY);
         if (ns_fd < 0) {
