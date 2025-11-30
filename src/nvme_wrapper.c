@@ -487,13 +487,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Debug: Print command details (first few times only)
     static int debug_count = 0;
     if (debug_count < 3) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, ns_fd=%d, data_len=%zu, addr=%p\n",
+        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, ns_fd=%d, data_len=%u, addr=%p\n",
                 ioctl_cmd.opcode, ioctl_cmd.nsid, ns_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
         debug_count++;
     }
     
-    // Use libnvme's nvme_io_passthru which handles TCP correctly
-    int ret = nvme_io_passthru(ns_fd, &ioctl_cmd, &result);
+    // Use libnvme's nvme_submit_io_passthru which handles TCP correctly
+    int ret = nvme_submit_io_passthru(ns_fd, &ioctl_cmd, &result);
     
     // Copy back data if we allocated an aligned buffer
     if (data_copied && data && data_len > 0) {
@@ -505,7 +505,7 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         // Log error for debugging
         static int error_log_count = 0;
         if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: nvme_io_passthru failed: %s (errno=%d, ns_fd=%d, opcode=0x%x, nsid=%u, data_len=%zu)\n",
+            fprintf(stderr, "ERROR: nvme_submit_io_passthru failed: %s (errno=%d, ns_fd=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
                     strerror(-ret), -ret, ns_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
             error_log_count++;
         }
