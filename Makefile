@@ -113,6 +113,16 @@ check-rte-log:
 	@echo "Checking for rte_log in libspdk_log:"
 	@nm $(SPDK_LIB)/libspdk_log.a 2>/dev/null | grep -E "rte_log|rte_vlog" | head -5 || echo "rte_log not found in libspdk_log"
 
+# Check if librte_log exists in DPDK library paths
+check-dpdk-log:
+	@echo "Checking for librte_log in DPDK library paths:"
+	@echo "  $(DPDK_LIB):"
+	@ls -1 $(DPDK_LIB)/librte_log.a 2>/dev/null || echo "    Not found"
+	@echo "  /usr/local/lib64:"
+	@ls -1 /usr/local/lib64/librte_log.a 2>/dev/null || echo "    Not found"
+	@echo "  /usr/local/lib:"
+	@ls -1 /usr/local/lib/librte_log.a 2>/dev/null || echo "    Not found"
+
 # Build the main executable
 # Add rpath so the binary can find libraries at runtime
 $(TARGET): $(OBJECTS)
