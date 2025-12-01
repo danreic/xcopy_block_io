@@ -500,6 +500,14 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
             range_data_debug_logged = 1;
         }
     } else {
+        // XCOPY commands MUST have data (range descriptors)
+        if (cmd->opcode == NVME_OPC_COPY) {
+            static int missing_data_warned = 0;
+            if (!missing_data_warned) {
+                fprintf(stderr, "WARNING: XCOPY command has no data buffer! This is invalid - XCOPY requires range descriptors.\n");
+                missing_data_warned = 1;
+            }
+        }
         ioctl_cmd.addr = 0;
         ioctl_cmd.data_len = 0;
     }
@@ -518,25 +526,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
     const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
     
-    // Debug: Print command details (first few times only)
+    // Debug: Print command details (first time only, or if data is missing)
     static int debug_count = 0;
-    if (debug_count < 3) {
+    if (debug_count < 1 || (cmd->opcode == NVME_OPC_COPY && ioctl_cmd.data_len == 0)) {
         fprintf(stderr, "DEBUG: Submitting NVMe command via direct ioctl: opcode=0x%x, nsid=%u, %s=%d, data_len=%u, addr=%p\n",
                 ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
-        fprintf(stderr, "DEBUG: Command CDW10=0x%x, CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
+        fprintf(stderr, "DEBUG: Command CDW10=0x%x (num_ranges-1), CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
                 ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
                 ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
         fprintf(stderr, "DEBUG: Command flags=0x%x, timeout_ms=%u, metadata_len=%u, rsvd1=%u\n",
                 ioctl_cmd.flags, ioctl_cmd.timeout_ms, ioctl_cmd.metadata_len, ioctl_cmd.rsvd1);
-        // Hex dump of command structure (first 64 bytes to see the structure)
-        fprintf(stderr, "DEBUG: Command structure hex dump (first 64 bytes):\n");
-        uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
-        for (int i = 0; i < 64 && i < (int)sizeof(ioctl_cmd); i += 16) {
-            fprintf(stderr, "  %04x: ", i);
-            for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
-                fprintf(stderr, "%02x ", cmd_bytes[i + j]);
-            }
-            fprintf(stderr, "\n");
+        if (cmd->opcode == NVME_OPC_COPY && ioctl_cmd.data_len == 0) {
+            fprintf(stderr, "ERROR: XCOPY command has data_len=0! This is invalid - XCOPY requires range descriptors.\n");
         }
         debug_count++;
     }
@@ -544,13 +545,6 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Use direct ioctl for I/O commands (like nvme-cli does)
     // NVME_IOCTL_IO_CMD is for I/O commands, NVME_IOCTL_ADMIN_CMD is for admin commands
     // Try namespace FD first (like nvme-cli), fall back to controller FD
-    // Debug: Log before ioctl call
-    static int ioctl_debug_count = 0;
-    if (ioctl_debug_count < 3) {
-        fprintf(stderr, "DEBUG: About to call ioctl(fd=%d, NVME_IOCTL_IO_CMD=0x%x, cmd=%p)\n",
-                target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
-        ioctl_debug_count++;
-    }
     // For NVME_IOCTL_IO_CMD, the kernel expects the command structure to be properly formatted
     // Make sure all fields are set correctly before the ioctl call
     int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
@@ -567,9 +561,9 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     __u8 status_type = (status >> 9) & 0x7;
     __u16 status_code = status & 0xFF;
     
-    // Log ioctl return and command result (first few times or if unusual)
+    // Log ioctl return and command result (only first few times, or on errors, or if result is non-zero)
     static int result_log_count = 0;
-    if (result_log_count < 10 || ret != 0 || status != 0) {
+    if (result_log_count < 3 || ret < 0 || status != 0 || result != 0) {
         fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d), command result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
                 ret, errno, result, status, status_type, status_code);
         result_log_count++;
@@ -601,11 +595,14 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // Command succeeded (status == 0)
+    // Note: For NVMe-TCP, result=0x0 might mean the command was submitted but not necessarily completed
+    // The kernel driver may accept the command immediately but send it to the server asynchronously
     static int success_logged = 0;
     if (!success_logged) {
-        fprintf(stderr, "DEBUG: NVMe command completed successfully (ioctl_ret=%d, result=0x%x, status=0x%x)\n",
+        fprintf(stderr, "DEBUG: NVMe command accepted by kernel (ioctl_ret=%d, result=0x%x, status=0x%x)\n",
                 ret, result, status);
-        fprintf(stderr, "DEBUG: Command was accepted by kernel/driver. Check server logs to verify if copy was executed.\n");
+        fprintf(stderr, "DEBUG: Note: result=0x0 may indicate command was submitted, not necessarily completed.\n");
+        fprintf(stderr, "DEBUG: For NVMe-TCP, commands are sent asynchronously - check server logs to verify receipt.\n");
         success_logged = 1;
     }
     
