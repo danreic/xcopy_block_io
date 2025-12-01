@@ -284,9 +284,9 @@ int concurrency_manager_submit(struct concurrency_manager *cm,
     // Debug: Check worker context before submitting
     static int submit_debug_count = 0;
     if (submit_debug_count < 3) {
-        fprintf(stderr, "DEBUG: concurrency_manager_submit: worker->nvme_ctx=%p, connected=%d, ctrl_fd=%d\n",
+        fprintf(stderr, "DEBUG: concurrency_manager_submit: worker->nvme_ctx=%p, connected=%d, hdl=%p\n",
                 worker->nvme_ctx, worker->nvme_ctx ? worker->nvme_ctx->connected : -1,
-                worker->nvme_ctx ? worker->nvme_ctx->ctrl_fd : -1);
+                worker->nvme_ctx ? worker->nvme_ctx->hdl : NULL);
         submit_debug_count++;
     }
     

@@ -14,76 +14,91 @@
 #include <sys/ioctl.h>
 #include <linux/nvme_ioctl.h>
 #include <endian.h>
+#include <nvme.h>  // libnvme high-level API
 
 int nvme_wrapper_init(struct nvme_context *ctx,
                      struct xcopy_transport_config *transport) {
-    if (!ctx || !transport) {
+    if (!ctx) {
         return -EINVAL;
     }
     
     memset(ctx, 0, sizeof(*ctx));
-    ctx->ctrl_fd = -1;
-    ctx->initialized = true;
+    ctx->initialized = false;
     ctx->connected = false;
     ctx->ns_capacity = 16;  // Initial capacity
+    
+    // Create libnvme global context (like nvme-cli does)
+    // Use stderr for logging, default log level
+    ctx->global_ctx = nvme_create_global_ctx(stderr, LOG_INFO);
+    if (!ctx->global_ctx) {
+        fprintf(stderr, "Error: Failed to create libnvme global context\n");
+        return -ENOMEM;
+    }
+    
+    // Initialize libnvme logging (like nvme-cli does)
+    nvme_init_default_logging(stderr, LOG_INFO, false, false);
     
     // Allocate namespace list
     ctx->ns_list = calloc(ctx->ns_capacity, sizeof(struct nvme_ns_info));
     if (!ctx->ns_list) {
+        nvme_free_global_ctx(ctx->global_ctx);
+        ctx->global_ctx = NULL;
         return -ENOMEM;
     }
     
+    ctx->initialized = true;
     return 0;
 }
 
-// Helper function to extract controller path from namespace path
-// /dev/nvme1n1 -> /dev/nvme1
-static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t len) {
-    if (!ns_path || !ctrl_path || len == 0) {
-        return -1;
+// Helper function to discover namespaces using libnvme
+static int discover_namespaces(struct nvme_context *ctx, struct nvme_transport_handle *hdl) {
+    if (!ctx || !hdl) {
+        return -EINVAL;
     }
     
-    const char *basename = strrchr(ns_path, '/');
-    if (!basename) {
-        basename = ns_path;
-    } else {
-        basename++;
-    }
+    // Clear existing namespace list
+    ctx->num_ns = 0;
     
-    // Check format: nvmeXnY where X is controller, Y is namespace
-    // Verify it starts with "nvme"
-    if (strncmp(basename, "nvme", 4) != 0) {
-        return -1;
-    }
-    
-    // Find the 'n' that separates controller from namespace
-    // Start after "nvme" prefix: "nvme1n1" -> "1n1"
-    const char *p = basename + 4;  // Skip "nvme"
-    
-    // Find the 'n' separator (should be after controller number)
-    const char *n_pos = strchr(p, 'n');
-    if (!n_pos) {
-        return -1;
-    }
-    
-    // Extract controller part: /dev/nvme1
-    // n_pos points to the separator 'n', so controller is everything before it
-    size_t ctrl_len = n_pos - basename;
-    
-    // Build full path: /dev/nvme1
-    const char *dir = strrchr(ns_path, '/');
-    if (dir) {
-        // Extract directory part (/dev) and controller name
-        size_t dir_len = dir - ns_path + 1;  // Include the '/'
-        if (snprintf(ctrl_path, len, "%.*s%.*s", 
-                     (int)dir_len, ns_path, (int)ctrl_len, basename) >= (int)len) {
-            return -1;
+    // Try to discover namespaces by attempting to identify each one
+    // Start from NSID 1 (NSID 0 is invalid)
+    for (uint32_t nsid = 1; nsid <= 256; nsid++) {
+        struct nvme_id_ns ns_id;
+        int err;
+        
+        // Try to identify the namespace
+        err = nvme_identify_ns(hdl, nsid, &ns_id);
+        if (err != 0) {
+            // No more namespaces
+            break;
         }
-    } else {
-        // No directory, just controller name
-        if (snprintf(ctrl_path, len, "%.*s", (int)ctrl_len, basename) >= (int)len) {
-            return -1;
+        
+        // Resize namespace list if needed
+        if (ctx->num_ns >= ctx->ns_capacity) {
+            uint32_t new_capacity = ctx->ns_capacity * 2;
+            struct nvme_ns_info *new_list = realloc(ctx->ns_list, 
+                                                    new_capacity * sizeof(struct nvme_ns_info));
+            if (!new_list) {
+                break;
+            }
+            ctx->ns_list = new_list;
+            ctx->ns_capacity = new_capacity;
         }
+        
+        // Extract namespace size and block size
+        uint64_t nsze_le;
+        memcpy(&nsze_le, &ns_id.nsze, sizeof(nsze_le));
+        uint64_t nsze = le64toh(nsze_le);
+        uint32_t lbaf = ns_id.flbas & 0xf;
+        uint32_t lba_size = 1 << ns_id.lbaf[lbaf].ds;
+        
+        ctx->ns_list[ctx->num_ns].nsid = nsid;
+        ctx->ns_list[ctx->num_ns].size_blocks = nsze;
+        ctx->ns_list[ctx->num_ns].block_size = lba_size;
+        ctx->num_ns++;
+    }
+    
+    if (ctx->num_ns == 0) {
+        fprintf(stderr, "Warning: No namespaces found on controller\n");
     }
     
     return 0;
@@ -91,7 +106,7 @@ static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t 
 
 int nvme_wrapper_connect_device(struct nvme_context *ctx,
                                 const char *device_path) {
-    if (!ctx || !device_path || !ctx->initialized) {
+    if (!ctx || !device_path || !ctx->initialized || !ctx->global_ctx) {
         return -EINVAL;
     }
     
@@ -99,98 +114,24 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
         return 0;
     }
     
-    // Extract controller path from namespace path
-    // e.g., /dev/nvme1n1 -> /dev/nvme1
-    char ctrl_path[64];
-    if (extract_controller_path(device_path, ctrl_path, sizeof(ctrl_path)) != 0) {
-        fprintf(stderr, "Error: Invalid device path format: %s\n", device_path);
-        fprintf(stderr, "  Expected format: /dev/nvmeXnY (e.g., /dev/nvme1n1)\n");
-        return -1;
+    // Use libnvme's nvme_open() to get transport handle (like nvme-cli does)
+    struct nvme_transport_handle *hdl = NULL;
+    int err = nvme_open(ctx->global_ctx, device_path, &hdl);
+    if (err != 0) {
+        fprintf(stderr, "Error: Failed to open NVMe device %s: %s\n", 
+                device_path, nvme_strerror(err));
+        return err;
     }
     
-    // Check if controller device exists
-    if (access(ctrl_path, F_OK) != 0) {
-        fprintf(stderr, "Error: Controller device %s does not exist\n", ctrl_path);
-        return -1;
-    }
-    
-    // Open the controller device
-    ctx->ctrl_fd = open(ctrl_path, O_RDWR);
-    if (ctx->ctrl_fd < 0) {
-        fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
-                ctrl_path, strerror(errno));
-        return -1;
-    }
-    
-    strncpy(ctx->device_path, ctrl_path, sizeof(ctx->device_path) - 1);
+    ctx->hdl = hdl;
+    strncpy(ctx->device_path, device_path, sizeof(ctx->device_path) - 1);
     ctx->device_path[sizeof(ctx->device_path) - 1] = '\0';
     
-    // Enumerate namespaces (same code as below)
-    ctx->num_ns = 0;
-    for (uint32_t nsid = 1; nsid <= 256; nsid++) {
-        char ns_path[64];
-        snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
-                 (int)(sizeof(ns_path) - 10), ctx->device_path, nsid);
-        
-        int ns_fd = open(ns_path, O_RDONLY);  // Match nvme-cli: use O_RDONLY for namespace device
-        if (ns_fd < 0) {
-            break;
-        }
-        
-        // Get namespace size using ioctl
-        struct nvme_id_ns ns_id;
-        struct nvme_passthru_cmd admin_cmd = {
-            .opcode = 0x06,  // NVME_ADMIN_IDENTIFY
-            .flags = 0,
-            .rsvd1 = 0,
-            .nsid = nsid,
-            .cdw2 = 0,
-            .cdw3 = 0,
-            .metadata = 0,
-            .addr = (__u64)(uintptr_t)&ns_id,
-            .metadata_len = 0,
-            .data_len = sizeof(ns_id),
-            .cdw10 = 0,
-            .cdw11 = 0,
-            .cdw12 = 0,
-            .cdw13 = 0,
-            .cdw14 = 0,
-            .cdw15 = 0,
-            .timeout_ms = 0,
-            .result = 0,
-        };
-        
-        if (ioctl(ctx->ctrl_fd, NVME_IOCTL_ADMIN_CMD, &admin_cmd) == 0) {
-            if (ctx->num_ns >= ctx->ns_capacity) {
-                uint32_t new_capacity = ctx->ns_capacity * 2;
-                struct nvme_ns_info *new_list = realloc(ctx->ns_list, 
-                                                        new_capacity * sizeof(struct nvme_ns_info));
-                if (!new_list) {
-                    close(ns_fd);
-                    break;
-                }
-                ctx->ns_list = new_list;
-                ctx->ns_capacity = new_capacity;
-            }
-            
-            uint64_t nsze_le;
-            memcpy(&nsze_le, &ns_id.nsze, sizeof(nsze_le));
-            uint64_t nsze = le64toh(nsze_le);
-            uint32_t lbaf = ns_id.flbas & 0xf;
-            uint32_t lba_size = 1 << ns_id.lbaf[lbaf].ds;
-            
-            ctx->ns_list[ctx->num_ns].nsid = nsid;
-            ctx->ns_list[ctx->num_ns].size_blocks = nsze;
-            ctx->ns_list[ctx->num_ns].block_size = lba_size;
-            ctx->ns_list[ctx->num_ns].fd = ns_fd;
-            ctx->num_ns++;
-        } else {
-            close(ns_fd);
-        }
-    }
-    
-    if (ctx->num_ns == 0) {
-        fprintf(stderr, "Warning: No namespaces found on controller\n");
+    // Discover namespaces using libnvme
+    if (discover_namespaces(ctx, hdl) != 0) {
+        nvme_close(hdl);
+        ctx->hdl = NULL;
+        return -1;
     }
     
     ctx->connected = true;
@@ -199,7 +140,7 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
 
 int nvme_wrapper_connect(struct nvme_context *ctx,
                         struct xcopy_transport_config *transport) {
-    if (!ctx || !transport || !ctx->initialized) {
+    if (!ctx || !transport || !ctx->initialized || !ctx->global_ctx) {
         return -EINVAL;
     }
     
@@ -246,12 +187,28 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
     char device_path[64];
     bool found = false;
     for (int i = 0; i < 16; i++) {
-        snprintf(device_path, sizeof(device_path), "/dev/nvme%d", i);
+        snprintf(device_path, sizeof(device_path), "/dev/nvme%dn1", i);  // Try namespace device first
         
-        // Check if device exists
+        // Check if namespace device exists
         if (access(device_path, F_OK) == 0) {
             found = true;
             break;
+        }
+        
+        // Also try controller device
+        snprintf(device_path, sizeof(device_path), "/dev/nvme%d", i);
+        if (access(device_path, F_OK) == 0) {
+            // Try to find first namespace
+            for (uint32_t nsid = 1; nsid <= 16; nsid++) {
+                char ns_path[64];
+                snprintf(ns_path, sizeof(ns_path), "/dev/nvme%dn%u", i, nsid);
+                if (access(ns_path, F_OK) == 0) {
+                    snprintf(device_path, sizeof(device_path), "/dev/nvme%dn%u", i, nsid);
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
         }
     }
     
@@ -261,115 +218,42 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         return -1;
     }
     
-    // Open the controller device (e.g., /dev/nvme0)
-    ctx->ctrl_fd = open(device_path, O_RDWR);
-    if (ctx->ctrl_fd < 0) {
-        fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
-                device_path, strerror(errno));
-        return -1;
+    // Use libnvme's nvme_open() to get transport handle (like nvme-cli does)
+    struct nvme_transport_handle *hdl = NULL;
+    ret = nvme_open(ctx->global_ctx, device_path, &hdl);
+    if (ret != 0) {
+        fprintf(stderr, "Error: Failed to open NVMe device %s: %s\n", 
+                device_path, nvme_strerror(ret));
+        return ret;
     }
     
+    ctx->hdl = hdl;
     strncpy(ctx->device_path, device_path, sizeof(ctx->device_path) - 1);
     ctx->device_path[sizeof(ctx->device_path) - 1] = '\0';
     
-    // Enumerate namespaces by trying to open each namespace device
-    // Namespace devices are like /dev/nvme0n1, /dev/nvme0n2, etc.
-    ctx->num_ns = 0;
-    for (uint32_t nsid = 1; nsid <= 256; nsid++) {
-        char ns_path[64];
-        snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
-                 (int)(sizeof(ns_path) - 10), device_path, nsid);
-        
-        int ns_fd = open(ns_path, O_RDONLY);  // Match nvme-cli: use O_RDONLY for namespace device
-        if (ns_fd < 0) {
-            // No more namespaces
-            break;
-        }
-        
-        // Get namespace size using ioctl
-        // Use nvme_passthru_cmd for admin commands
-        struct nvme_id_ns ns_id;
-        struct nvme_passthru_cmd admin_cmd = {
-            .opcode = 0x06,  // NVME_ADMIN_IDENTIFY
-            .flags = 0,
-            .rsvd1 = 0,
-            .nsid = nsid,
-            .cdw2 = 0,
-            .cdw3 = 0,
-            .metadata = 0,
-            .addr = (__u64)(uintptr_t)&ns_id,
-            .metadata_len = 0,
-            .data_len = sizeof(ns_id),
-            .cdw10 = 0,  // CNS = 0 (identify namespace)
-            .cdw11 = 0,
-            .cdw12 = 0,
-            .cdw13 = 0,
-            .cdw14 = 0,
-            .cdw15 = 0,
-            .timeout_ms = 0,
-            .result = 0,
-        };
-        
-        if (ioctl(ctx->ctrl_fd, NVME_IOCTL_ADMIN_CMD, &admin_cmd) == 0) {
-            // Resize namespace list if needed
-            if (ctx->num_ns >= ctx->ns_capacity) {
-                uint32_t new_capacity = ctx->ns_capacity * 2;
-                struct nvme_ns_info *new_list = realloc(ctx->ns_list, 
-                                                        new_capacity * sizeof(struct nvme_ns_info));
-                if (!new_list) {
-                    close(ns_fd);
-                    break;
-                }
-                ctx->ns_list = new_list;
-                ctx->ns_capacity = new_capacity;
-            }
-            
-            // Calculate namespace size
-            // ns_id.nsze is in little-endian format from kernel
-            // Use memcpy to avoid alignment issues, then convert
-            uint64_t nsze_le;
-            memcpy(&nsze_le, &ns_id.nsze, sizeof(nsze_le));
-            uint64_t nsze = le64toh(nsze_le);
-            uint32_t lbaf = ns_id.flbas & 0xf;
-            uint32_t lba_size = 1 << ns_id.lbaf[lbaf].ds;
-            
-            ctx->ns_list[ctx->num_ns].nsid = nsid;
-            ctx->ns_list[ctx->num_ns].size_blocks = nsze;
-            ctx->ns_list[ctx->num_ns].block_size = lba_size;
-            ctx->ns_list[ctx->num_ns].fd = ns_fd;
-            ctx->num_ns++;
-        } else {
-            close(ns_fd);
-        }
-    }
-    
-    if (ctx->num_ns == 0) {
-        fprintf(stderr, "Warning: No namespaces found on controller\n");
+    // Discover namespaces using libnvme
+    if (discover_namespaces(ctx, hdl) != 0) {
+        nvme_close(hdl);
+        ctx->hdl = NULL;
+        return -1;
     }
     
     ctx->connected = true;
     return 0;
 }
 
-int nvme_wrapper_get_ctrl_fd(struct nvme_context *ctx) {
+struct nvme_transport_handle *nvme_wrapper_get_handle(struct nvme_context *ctx) {
     if (!ctx || !ctx->connected) {
-        return -1;
+        return NULL;
     }
-    return ctx->ctrl_fd;
+    return ctx->hdl;
 }
 
-int nvme_wrapper_get_ns_fd(struct nvme_context *ctx, uint32_t nsid) {
-    if (!ctx || !ctx->connected) {
-        return -1;
+struct nvme_global_ctx *nvme_wrapper_get_global_ctx(struct nvme_context *ctx) {
+    if (!ctx || !ctx->initialized) {
+        return NULL;
     }
-    
-    for (uint32_t i = 0; i < ctx->num_ns; i++) {
-        if (ctx->ns_list[i].nsid == nsid) {
-            return ctx->ns_list[i].fd;
-        }
-    }
-    
-    return -1;
+    return ctx->global_ctx;
 }
 
 uint64_t nvme_wrapper_get_ns_size(struct nvme_context *ctx, uint32_t nsid) {
@@ -416,19 +300,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         return -EINVAL;
     }
     
-    if (!ctx->connected) {
-        // Only print this error once to avoid flooding output
+    if (!ctx->connected || !ctx->hdl) {
         static int not_connected_logged = 0;
         if (!not_connected_logged) {
-            fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d, ctx=%p, ctrl_fd=%d, initialized=%d)\n", 
-                    ctx->connected, ctx, ctx->ctrl_fd, ctx->initialized);
+            fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d, hdl=%p, initialized=%d)\n", 
+                    ctx->connected, ctx->hdl, ctx->initialized);
             not_connected_logged = 1;
         }
-        return -EINVAL;
-    }
-    
-    if (ctx->ctrl_fd < 0 || ctx->ctrl_fd > 1000000) {  // Sanity check: valid FDs are small integers
-        fprintf(stderr, "nvme_wrapper_submit_passthru: Invalid ctrl_fd=%d (expected 0-1000000)\n", ctx->ctrl_fd);
         return -EINVAL;
     }
     
@@ -440,42 +318,16 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Set namespace ID in command
     cmd->nsid = nsid;
     
-    // Prepare ioctl structure
-    struct nvme_passthru_cmd ioctl_cmd = *cmd;
-    
-    // Don't manually set command_id - let the kernel driver manage it
-    // The kernel will assign command IDs automatically for proper command queuing
-    // For NVMe-TCP, the kernel driver handles command submission and completion
-    
-    // Set data pointer if provided
-    // For NVMe-TCP, buffers must be page-aligned for DMA operations
-    void *aligned_data = NULL;
-    bool data_copied = false;
-    
+    // Set data pointer and length if provided
+    // libnvme handles page alignment internally
     if (data && data_len > 0) {
-        long page_size = sysconf(_SC_PAGESIZE);
-        if (page_size > 0 && ((uintptr_t)data % page_size) != 0) {
-            // Allocate page-aligned buffer and copy data
-            if (posix_memalign(&aligned_data, page_size, data_len) != 0) {
-                fprintf(stderr, "Error: Failed to allocate page-aligned memory for data\n");
-                return -ENOMEM;
-            }
-            memcpy(aligned_data, data, data_len);
-            ioctl_cmd.addr = (__u64)(uintptr_t)aligned_data;
-            data_copied = true;
-        } else {
-            ioctl_cmd.addr = (__u64)(uintptr_t)data;
-        }
-        ioctl_cmd.data_len = data_len;
+        cmd->addr = (__u64)(uintptr_t)data;
+        cmd->data_len = data_len;
         
-        // Debug: Print detailed information about data buffer (always print first time for XCOPY)
+        // Debug: Print detailed information about data buffer (first time for XCOPY)
         static int range_data_debug_logged = 0;
         if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
-            // Determine which buffer will actually be sent
-            void *buffer_to_send = data_copied ? aligned_data : data;
-            
-            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)buffer_to_send;
-            // Note: Values are in little-endian format, so we need to convert back for display
+            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)data;
             uint32_t src_nsid_le = first_range->src_nsid;
             uint64_t src_lba_le = first_range->src_lba;
             uint32_t num_blocks_le = first_range->num_blocks;
@@ -483,16 +335,9 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
             fprintf(stderr, "DEBUG: Range descriptor in data buffer (little-endian): src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
                     le32toh(src_nsid_le), le64toh(src_lba_le), le32toh(num_blocks_le), le64toh(dst_lba_le));
             
-            if (data_copied) {
-                fprintf(stderr, "DEBUG: Using page-aligned buffer at %p (original was at %p)\n", 
-                        buffer_to_send, data);
-            } else {
-                fprintf(stderr, "DEBUG: Using original buffer at %p\n", buffer_to_send);
-            }
-            
-            // Hex dump of first 64 bytes (first 2 range descriptors) of the actual buffer being sent
-            fprintf(stderr, "DEBUG: Hex dump of buffer being sent to kernel (first 64 bytes):\n");
-            uint8_t *buffer_bytes = (uint8_t *)buffer_to_send;
+            // Hex dump of first 64 bytes
+            fprintf(stderr, "DEBUG: Hex dump of buffer being sent (first 64 bytes):\n");
+            uint8_t *buffer_bytes = (uint8_t *)data;
             for (int i = 0; i < 64 && i < (int)data_len; i += 16) {
                 fprintf(stderr, "  %04x: ", i);
                 for (int j = 0; j < 16 && (i + j) < (int)data_len; j++) {
@@ -500,7 +345,6 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                 }
                 fprintf(stderr, "\n");
             }
-            
             range_data_debug_logged = 1;
         }
     } else {
@@ -512,119 +356,49 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
                 missing_data_warned = 1;
             }
         }
-        ioctl_cmd.addr = 0;
-        ioctl_cmd.data_len = 0;
+        cmd->addr = 0;
+        cmd->data_len = 0;
     }
     
-    // XCOPY is an I/O command (opcode 0x19)
-    // For NVMe-TCP, use namespace FD (like nvme-cli does)
-    // The kernel will use the NSID from the FD, but we still need to set it in the command
-    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
-    // Debug: Check which FD we're using
-    static int fd_debug_count = 0;
-    if (fd_debug_count < 3) {
-        fprintf(stderr, "DEBUG: ns_fd=%d, ctrl_fd=%d, will use %s\n",
-                ns_fd, ctx->ctrl_fd, (ns_fd >= 0) ? "ns_fd" : "ctrl_fd");
-        fd_debug_count++;
-    }
-    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
-    const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
+    // Use libnvme's nvme_submit_io_passthru() (like nvme-cli does)
+    // This handles all the low-level details including proper command formatting
+    int err = nvme_submit_io_passthru(ctx->hdl, cmd);
     
-    // Debug: Print command details (first time only, or if data is missing)
+    // Debug: Print command details (first time only)
     static int debug_count = 0;
-    if (debug_count < 1 || (cmd->opcode == NVME_OPC_COPY && ioctl_cmd.data_len == 0)) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via direct ioctl: opcode=0x%x, nsid=%u, %s=%d, data_len=%u, addr=%p\n",
-                ioctl_cmd.opcode, ioctl_cmd.nsid, fd_type, target_fd, ioctl_cmd.data_len, (void*)ioctl_cmd.addr);
-        fprintf(stderr, "DEBUG: Command CDW10=0x%x (num_ranges-1), CDW11=0x%x, CDW12=0x%x, CDW13=0x%x, CDW14=0x%x, CDW15=0x%x\n",
-                ioctl_cmd.cdw10, ioctl_cmd.cdw11, ioctl_cmd.cdw12, 
-                ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
-        fprintf(stderr, "DEBUG: Command flags=0x%x, timeout_ms=%u, metadata_len=%u, rsvd1=%u\n",
-                ioctl_cmd.flags, ioctl_cmd.timeout_ms, ioctl_cmd.metadata_len, ioctl_cmd.rsvd1);
-        if (cmd->opcode == NVME_OPC_COPY && ioctl_cmd.data_len == 0) {
-            fprintf(stderr, "ERROR: XCOPY command has data_len=0! This is invalid - XCOPY requires range descriptors.\n");
-        }
-        // Print hex dump of command structure (first 64 bytes) for comparison with nvme-cli
-        if (debug_count < 1) {
-            fprintf(stderr, "DEBUG: Command structure hex dump (first 64 bytes) - compare with nvme-cli:\n");
-            uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
-            for (int i = 0; i < 64 && i < (int)sizeof(ioctl_cmd); i += 16) {
-                fprintf(stderr, "  %04x: ", i);
-                for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
-                    fprintf(stderr, "%02x ", cmd_bytes[i + j]);
-                }
-                fprintf(stderr, "\n");
-            }
-        }
+    if (debug_count < 1) {
+        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, data_len=%u\n",
+                cmd->opcode, cmd->nsid, cmd->data_len);
+        fprintf(stderr, "DEBUG: Command CDW10=0x%x (num_ranges-1), CDW11=0x%x, CDW12=0x%x\n",
+                cmd->cdw10, cmd->cdw11, cmd->cdw12);
         debug_count++;
     }
     
-    // Use direct ioctl for I/O commands (like nvme-cli does)
-    // NVME_IOCTL_IO_CMD is for I/O commands, NVME_IOCTL_ADMIN_CMD is for admin commands
-    // Try namespace FD first (like nvme-cli), fall back to controller FD
-    // For NVME_IOCTL_IO_CMD, the kernel expects the command structure to be properly formatted
-    // Make sure all fields are set correctly before the ioctl call
-    
-    // Debug: Print final ioctl_cmd structure before ioctl call (for comparison with nvme-cli)
-    static int final_cmd_logged = 0;
-    if (!final_cmd_logged && cmd->opcode == NVME_OPC_COPY) {
-        fprintf(stderr, "DEBUG: Final ioctl_cmd structure before ioctl (for comparison with nvme-cli):\n");
-        fprintf(stderr, "  opcode=0x%02x, flags=0x%02x, rsvd1=0x%04x, nsid=%u\n",
-                ioctl_cmd.opcode, ioctl_cmd.flags, ioctl_cmd.rsvd1, ioctl_cmd.nsid);
-        fprintf(stderr, "  cdw2=0x%08x, cdw3=0x%08x, cdw10=0x%08x, cdw11=0x%08x, cdw12=0x%08x, cdw13=0x%08x, cdw14=0x%08x, cdw15=0x%08x\n",
-                ioctl_cmd.cdw2, ioctl_cmd.cdw3, ioctl_cmd.cdw10, ioctl_cmd.cdw11,
-                ioctl_cmd.cdw12, ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
-        fprintf(stderr, "  metadata=0x%016llx, addr=0x%016llx, metadata_len=%u, data_len=%u, timeout_ms=%u\n",
-                (unsigned long long)ioctl_cmd.metadata, (unsigned long long)ioctl_cmd.addr,
-                ioctl_cmd.metadata_len, ioctl_cmd.data_len, ioctl_cmd.timeout_ms);
-        fprintf(stderr, "  result=0x%08x\n", ioctl_cmd.result);
-        fprintf(stderr, "  Full structure hex (first 128 bytes):\n");
-        uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
-        for (int i = 0; i < 128 && i < (int)sizeof(ioctl_cmd); i += 16) {
-            fprintf(stderr, "    %04x: ", i);
-            for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
-                fprintf(stderr, "%02x ", cmd_bytes[i + j]);
-            }
-            fprintf(stderr, "\n");
+    if (err < 0) {
+        // Command submission failed
+        static int error_log_count = 0;
+        if (error_log_count < 5) {
+            fprintf(stderr, "ERROR: NVMe command submission failed: %s (opcode=0x%x, nsid=%u, data_len=%u)\n",
+                    nvme_strerror(err), cmd->opcode, nsid, cmd->data_len);
+            error_log_count++;
         }
-        final_cmd_logged = 1;
+        return err;
     }
     
-    int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
-    
-    // Copy back data if we allocated an aligned buffer
-    if (data_copied && data && data_len > 0) {
-        memcpy(data, aligned_data, data_len);
-        free(aligned_data);
-    }
-    
-    // Always check the result field - this is the actual command status
-    __u32 result = ioctl_cmd.result;
+    // Check command status from result field
+    __u32 result = cmd->result;
     __u16 status = (result >> 1) & 0x7FFF;
     __u8 status_type = (status >> 9) & 0x7;
     __u16 status_code = status & 0xFF;
     
-    // Log ioctl return and command result (only first few times, or on errors, or if result is non-zero)
+    // Log result (first few times or on errors)
     static int result_log_count = 0;
-    if (result_log_count < 3 || ret < 0 || status != 0 || result != 0) {
-        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d), command result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
-                ret, errno, result, status, status_type, status_code);
+    if (result_log_count < 3 || status != 0 || result != 0) {
+        fprintf(stderr, "DEBUG: Command submission returned %d, command result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
+                err, result, status, status_type, status_code);
         result_log_count++;
     }
     
-    if (ret < 0) {
-        // ioctl returns -1 on error, errno contains the error code
-        static int error_log_count = 0;
-        if (error_log_count < 5) {
-            fprintf(stderr, "ERROR: NVME_IOCTL_IO_CMD failed: %s (errno=%d, %s=%d, opcode=0x%x, nsid=%u, data_len=%u)\n",
-                    strerror(errno), errno, fd_type, target_fd, cmd->opcode, nsid, ioctl_cmd.data_len);
-            error_log_count++;
-        }
-        return -errno;
-    }
-    
-    // For NVME_IOCTL_IO_CMD, a return value >= 0 means the ioctl call succeeded
-    // But we must check ioctl_cmd.result for the actual NVMe command status
-    // Status code is in bits 15:1, phase bit is bit 0
     if (status != 0) {
         // Log status for debugging
         static int status_log_count = 0;
@@ -637,14 +411,10 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // Command succeeded (status == 0)
-    // Note: For NVMe-TCP, result=0x0 might mean the command was submitted but not necessarily completed
-    // The kernel driver may accept the command immediately but send it to the server asynchronously
     static int success_logged = 0;
     if (!success_logged) {
-        fprintf(stderr, "DEBUG: NVMe command accepted by kernel (ioctl_ret=%d, result=0x%x, status=0x%x)\n",
-                ret, result, status);
-        fprintf(stderr, "DEBUG: Note: result=0x0 may indicate command was submitted, not necessarily completed.\n");
-        fprintf(stderr, "DEBUG: For NVMe-TCP, commands are sent asynchronously - check server logs to verify receipt.\n");
+        fprintf(stderr, "DEBUG: NVMe command submitted successfully (err=%d, result=0x%x, status=0x%x)\n",
+                err, result, status);
         success_logged = 1;
     }
     
@@ -656,21 +426,22 @@ void nvme_wrapper_cleanup(struct nvme_context *ctx) {
         return;
     }
     
-    // Close namespace file descriptors
+    // Close transport handle (like nvme-cli does)
+    if (ctx->hdl) {
+        nvme_close(ctx->hdl);
+        ctx->hdl = NULL;
+    }
+    
+    // Free namespace list
     if (ctx->ns_list) {
-        for (uint32_t i = 0; i < ctx->num_ns; i++) {
-            if (ctx->ns_list[i].fd >= 0) {
-                close(ctx->ns_list[i].fd);
-            }
-        }
         free(ctx->ns_list);
         ctx->ns_list = NULL;
     }
     
-    // Close controller file descriptor
-    if (ctx->ctrl_fd >= 0) {
-        close(ctx->ctrl_fd);
-        ctx->ctrl_fd = -1;
+    // Free global context (like nvme-cli does)
+    if (ctx->global_ctx) {
+        nvme_free_global_ctx(ctx->global_ctx);
+        ctx->global_ctx = NULL;
     }
     
     ctx->connected = false;

@@ -350,15 +350,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     
-    int ctrl_fd = nvme_wrapper_get_ctrl_fd(&nvme_ctx);
-    if (ctrl_fd < 0 || ctrl_fd > 1000000) {
-        fprintf(stderr, "No controller found or invalid FD (ctrl_fd=%d)\n", ctrl_fd);
+    // Verify we have a transport handle
+    struct nvme_transport_handle *hdl = nvme_wrapper_get_handle(&nvme_ctx);
+    if (!hdl) {
+        fprintf(stderr, "No transport handle found (connected=%d)\n", nvme_ctx.connected);
         nvme_wrapper_cleanup(&nvme_ctx);
         return 1;
     }
     
     if (config.verbose) {
-        printf("Connected to NVMe controller (ctrl_fd=%d, connected=%d)\n", ctrl_fd, nvme_ctx.connected);
+        printf("Connected to NVMe controller (connected=%d)\n", nvme_ctx.connected);
     }
     
     // Initialize volume manager
@@ -372,12 +373,12 @@ int main(int argc, char **argv) {
     // Namespaces are already discovered in nvme_wrapper_connect()
     for (uint32_t i = 0; i < nvme_ctx.num_ns; i++) {
         uint32_t nsid = nvme_ctx.ns_list[i].nsid;
-        int ns_fd = nvme_wrapper_get_ns_fd(&nvme_ctx, nsid);
         uint64_t ns_size = nvme_wrapper_get_ns_size(&nvme_ctx, nsid);
         uint32_t block_size = nvme_wrapper_get_block_size(&nvme_ctx, nsid);
         
-        if (ns_fd >= 0 && ns_size > 0) {
-            if (volume_manager_add(&vol_mgr, nsid, ns_fd, ctrl_fd) == 0) {
+        if (ns_size > 0) {
+            // Pass -1 for FDs since we're using libnvme handles now
+            if (volume_manager_add(&vol_mgr, nsid, -1, -1) == 0) {
                 // Set size and block size
                 struct volume_info *vol = volume_manager_get(&vol_mgr, nsid);
                 if (vol) {
@@ -437,8 +438,8 @@ int main(int argc, char **argv) {
     // Initialize concurrency manager
     // Debug: Print context state before passing to concurrency manager
     if (config.verbose) {
-        printf("DEBUG: Before concurrency_manager_init: nvme_ctx=%p, connected=%d, ctrl_fd=%d, initialized=%d\n",
-               &nvme_ctx, nvme_ctx.connected, nvme_ctx.ctrl_fd, nvme_ctx.initialized);
+        printf("DEBUG: Before concurrency_manager_init: nvme_ctx=%p, connected=%d, hdl=%p, initialized=%d\n",
+               &nvme_ctx, nvme_ctx.connected, nvme_ctx.hdl, nvme_ctx.initialized);
     }
     
     if (concurrency_manager_init(&concurrency_mgr, &nvme_ctx, config.num_threads, config.queue_depth) != 0) {
@@ -450,8 +451,8 @@ int main(int argc, char **argv) {
     
     // Debug: Verify context is still connected after init
     if (config.verbose) {
-        printf("DEBUG: After concurrency_manager_init: nvme_ctx=%p, connected=%d, ctrl_fd=%d\n",
-               &nvme_ctx, nvme_ctx.connected, nvme_ctx.ctrl_fd);
+        printf("DEBUG: After concurrency_manager_init: nvme_ctx=%p, connected=%d, hdl=%p\n",
+               &nvme_ctx, nvme_ctx.connected, nvme_ctx.hdl);
     }
     
     // Start worker threads

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <endian.h>
+#include <nvme.h>  // libnvme high-level API
 
 int xcopy_cmd_build(struct xcopy_operation *op,
                     uint32_t dst_nsid,
@@ -15,28 +16,20 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     // Clear command structure
     memset(&op->cmd, 0, sizeof(op->cmd));
     
-    // Set command opcode (NVMe Copy = 0x19)
-    op->cmd.opcode = NVME_OPC_COPY;
-    
-    // Set destination namespace ID
-    op->cmd.nsid = dst_nsid;
     op->dst_nsid = dst_nsid;
+    op->num_ranges = num_ranges;
     
-    // Set number of ranges (0-based, so num_ranges-1)
-    op->cmd.cdw10 = (num_ranges - 1) & 0xFFFF;
+    // Prepare arrays for libnvme's nvme_init_copy_range_f2() function
+    // Format 2 is for cross-namespace copy (includes src_nsid)
+    __u32 snsids[MAX_COPY_RANGES];
+    __u16 nlbs[MAX_COPY_RANGES];
+    __u64 slbas[MAX_COPY_RANGES];
+    __u16 sopts[MAX_COPY_RANGES] = {0};  // Source options (all zeros for now)
+    __u32 eilbrts_short[MAX_COPY_RANGES] = {0};  // Expected LBA reference tags (short format)
+    __u32 elbatms[MAX_COPY_RANGES] = {0};  // Expected LBA application tag masks
+    __u32 elbats[MAX_COPY_RANGES] = {0};   // Expected LBA application tags
     
-    // Set flags and data for passthrough command
-    // Note: libnvme's nvme_passthru_cmd structure fields may vary by version
-    // Common fields: opcode, flags, rsvd1, nsid, cdw2-cdw15, data_len, metadata_len
-    // Data pointer is typically passed separately to nvme_submit_io_passthru()
-    op->cmd.flags = 0;  // No special flags
-    op->cmd.rsvd1 = 0;  // Reserved field - kernel will manage command_id
-    op->cmd.data_len = xcopy_cmd_get_data_size(num_ranges);
-    op->cmd.metadata_len = 0;
-    op->cmd.timeout_ms = 60000;  // 60 second timeout for NVMe-TCP (commands may take time over network)
-    // Note: Data pointer (op->ranges) is passed separately to submit function
-    
-    // Copy range descriptors and convert to little-endian (NVMe spec requirement)
+    // Extract data from our range descriptors
     // Debug: Print first range descriptor (only once)
     static int range_debug_logged = 0;
     if (!range_debug_logged && num_ranges > 0) {
@@ -45,16 +38,46 @@ int xcopy_cmd_build(struct xcopy_operation *op,
         range_debug_logged = 1;
     }
     
+    // Calculate destination LBA from first range (all ranges should have same dst_lba pattern)
+    // For simplicity, we'll use the first range's dst_lba as the base
+    // In practice, ranges should be consecutive in destination
+    uint64_t sdlba = ranges[0].dst_lba;
+    
     for (uint32_t i = 0; i < num_ranges; i++) {
-        op->ranges[i].rsvd0 = htole32(ranges[i].rsvd0);
-        op->ranges[i].src_nsid = htole32(ranges[i].src_nsid);
-        op->ranges[i].src_lba = htole64(ranges[i].src_lba);
-        op->ranges[i].rsvd1 = htole32(ranges[i].rsvd1);
-        op->ranges[i].num_blocks = htole32(ranges[i].num_blocks);
-        op->ranges[i].dst_lba = htole64(ranges[i].dst_lba);
-        // Note: No rsvd2/rsvd3 - descriptor is exactly 32 bytes per NVMe spec
+        snsids[i] = ranges[i].src_nsid;
+        slbas[i] = ranges[i].src_lba;
+        nlbs[i] = ranges[i].num_blocks;  // Already 0-based
+        // Note: We're using format 2 which supports cross-namespace copy
     }
-    op->num_ranges = num_ranges;
+    
+    // Use libnvme's nvme_init_copy_range_f2() to build range descriptors (format 2)
+    // This matches nvme-cli's approach for cross-namespace copy
+    nvme_init_copy_range_f2((struct nvme_copy_range_f2 *)op->ranges, 
+                            snsids, nlbs, slbas, sopts,
+                            eilbrts_short, elbatms, elbats, num_ranges);
+    
+    // Use libnvme's nvme_init_copy() to build the command (like nvme-cli does)
+    // Format 2 = cross-namespace copy
+    // Parameters: namespace_id, sdlba, num_ranges, format, prinfor, prinfow, 
+    //             expected_ilbrt, dtype, limited_retry, force_unit_access, 
+    //             fua, lr, dsm, dspec, ranges
+    nvme_init_copy(&op->cmd, dst_nsid, sdlba, num_ranges, 2,  // format 2 for cross-namespace
+                   0,  // prinfor (protection info read)
+                   0,  // prinfow (protection info write)
+                   0,  // expected_ilbrt
+                   0,  // dtype (directive type)
+                   false,  // limited_retry
+                   false,  // force_unit_access
+                   false,  // fua
+                   false,  // lr
+                   0,  // dsm
+                   0,  // dspec
+                   (struct nvme_copy_range *)op->ranges);  // Cast to format 0 structure pointer
+    
+    // Set data length and pointer
+    op->cmd.data_len = xcopy_cmd_get_data_size(num_ranges);
+    op->cmd.addr = (__u64)(uintptr_t)op->ranges;
+    op->cmd.timeout_ms = 60000;  // 60 second timeout for NVMe-TCP
     
     // Initialize operation state
     op->completed = false;

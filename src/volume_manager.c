@@ -29,9 +29,11 @@ int volume_manager_add(struct volume_manager *vm,
                       uint32_t nsid,
                       int ns_fd,
                       int ctrl_fd) {
-    if (!vm || ns_fd < 0 || ctrl_fd < 0) {
+    if (!vm) {
         return -EINVAL;
     }
+    // FDs are optional now (we use libnvme handles instead)
+    // Use -1 to indicate no FD available
     
     // Check if volume already exists
     for (uint32_t i = 0; i < vm->num_volumes; i++) {
