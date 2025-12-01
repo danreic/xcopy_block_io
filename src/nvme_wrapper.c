@@ -464,7 +464,7 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         }
         ioctl_cmd.data_len = data_len;
         
-        // Debug: Print detailed information about data buffer (only once)
+        // Debug: Print detailed information about data buffer (always print first time for XCOPY)
         static int range_data_debug_logged = 0;
         if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
             // Determine which buffer will actually be sent
