@@ -442,20 +442,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         fd_choice_logged = 1;
     }
     
-    // Use libnvme's nvme_submit_io_passthru() (takes fd, not handle)
-    // This handles all the low-level details including proper command formatting
-    __u32 result = 0;
-    int err = nvme_submit_io_passthru(target_fd, cmd, &result);
-    
-    // Store result in command structure
-    cmd->result = result;
+    // Use direct ioctl for I/O passthrough commands (like the original implementation)
+    // nvme_submit_io_passthru() might not work correctly for all cases
+    // Use NVME_IOCTL_IO_CMD directly to ensure the command is sent
+    int err = ioctl(target_fd, NVME_IOCTL_IO_CMD, cmd);
+    __u32 result = cmd->result;
     
     // Debug: Print command details (first time only)
     static int debug_count = 0;
     if (debug_count < 1) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, data_len=%u, fd=%d\n",
+        fprintf(stderr, "DEBUG: Submitting NVMe command via direct ioctl: opcode=0x%x, nsid=%u, data_len=%u, fd=%d\n",
                 cmd->opcode, cmd->nsid, cmd->data_len, target_fd);
-        fprintf(stderr, "DEBUG: Command CDW10=0x%x (num_ranges-1), CDW11=0x%x, CDW12=0x%x\n",
+        fprintf(stderr, "DEBUG: Command CDW10=0x%x (format=2, num_ranges-1=0), CDW11=0x%x (dst_lba low), CDW12=0x%x (dst_lba high)\n",
                 cmd->cdw10, cmd->cdw11, cmd->cdw12);
         debug_count++;
     }
