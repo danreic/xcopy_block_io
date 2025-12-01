@@ -289,6 +289,7 @@ def analyze_pcap(filename):
                             print(f"\nFound XCOPY command in PDU type 0x00 at offset {offset} in stream {stream_key}")
                             print(f"  PDU type: 0x{pdu['pdu_type']:02x}, length: {pdu['pdu_length']}")
                             print(f"  NVMe command at offset: {nvme_cmd_offset}")
+                            print(f"  Command hex: {cmd['raw'].hex()}")
                             print(f"  NSID: {cmd['nsid']}, CDW10: 0x{cmd['cdw10']:08x}")
                             
                             # Get range descriptor data (after NVMe command)
@@ -308,6 +309,11 @@ def analyze_pcap(filename):
                                 'offset': offset,
                                 'pdu': pdu
                             })
+                        elif pdu_count <= 5 and nvme_cmd_offset + 64 <= len(stream_payload):
+                            # Debug: show first few commands in PDU type 0x00
+                            cmd = parse_nvme_command(stream_payload[nvme_cmd_offset:])
+                            if cmd:
+                                print(f"    PDU 0x00 at offset {offset}: opcode=0x{cmd['opcode']:02x}, nsid={cmd['nsid']}")
                 
                 elif pdu['pdu_type'] == 0x04:  # I/O command
                     # I/O command PDU structure:
