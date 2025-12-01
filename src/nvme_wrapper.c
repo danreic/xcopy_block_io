@@ -14,7 +14,6 @@
 #include <sys/ioctl.h>
 #include <linux/nvme_ioctl.h>
 #include <endian.h>
-#include <syslog.h>  // For LOG_INFO
 // libnvme.h is already included via nvme_wrapper.h
 
 int nvme_wrapper_init(struct nvme_context *ctx,
@@ -24,36 +23,23 @@ int nvme_wrapper_init(struct nvme_context *ctx,
     }
     
     memset(ctx, 0, sizeof(*ctx));
-    ctx->initialized = false;
+    ctx->ctrl_fd = -1;
+    ctx->initialized = true;
     ctx->connected = false;
     ctx->ns_capacity = 16;  // Initial capacity
-    
-    // Create libnvme global context (like nvme-cli does)
-    // Use stderr for logging, default log level
-    ctx->global_ctx = nvme_create_global_ctx(stderr, LOG_INFO);
-    if (!ctx->global_ctx) {
-        fprintf(stderr, "Error: Failed to create libnvme global context\n");
-        return -ENOMEM;
-    }
-    
-    // Initialize libnvme logging (like nvme-cli does)
-    nvme_init_default_logging(stderr, LOG_INFO, false, false);
     
     // Allocate namespace list
     ctx->ns_list = calloc(ctx->ns_capacity, sizeof(struct nvme_ns_info));
     if (!ctx->ns_list) {
-        nvme_free_global_ctx(ctx->global_ctx);
-        ctx->global_ctx = NULL;
         return -ENOMEM;
     }
     
-    ctx->initialized = true;
     return 0;
 }
 
 // Helper function to discover namespaces using libnvme
-static int discover_namespaces(struct nvme_context *ctx, struct nvme_transport_handle *hdl) {
-    if (!ctx || !hdl) {
+static int discover_namespaces(struct nvme_context *ctx, int ctrl_fd) {
+    if (!ctx || ctrl_fd < 0) {
         return -EINVAL;
     }
     
@@ -66,8 +52,8 @@ static int discover_namespaces(struct nvme_context *ctx, struct nvme_transport_h
         struct nvme_id_ns ns_id;
         int err;
         
-        // Try to identify the namespace
-        err = nvme_identify_ns(hdl, nsid, &ns_id);
+        // Use libnvme's nvme_identify_ns() helper (takes fd, not handle)
+        err = nvme_identify_ns(ctrl_fd, nsid, &ns_id);
         if (err != 0) {
             // No more namespaces
             break;
@@ -92,9 +78,16 @@ static int discover_namespaces(struct nvme_context *ctx, struct nvme_transport_h
         uint32_t lbaf = ns_id.flbas & 0xf;
         uint32_t lba_size = 1 << ns_id.lbaf[lbaf].ds;
         
+        // Try to open namespace device
+        char ns_path[64];
+        snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
+                 (int)(sizeof(ns_path) - 10), ctx->device_path, nsid);
+        int ns_fd = open(ns_path, O_RDONLY);
+        
         ctx->ns_list[ctx->num_ns].nsid = nsid;
         ctx->ns_list[ctx->num_ns].size_blocks = nsze;
         ctx->ns_list[ctx->num_ns].block_size = lba_size;
+        ctx->ns_list[ctx->num_ns].fd = ns_fd;  // May be -1 if open failed
         ctx->num_ns++;
     }
     
@@ -105,9 +98,51 @@ static int discover_namespaces(struct nvme_context *ctx, struct nvme_transport_h
     return 0;
 }
 
+// Helper function to extract controller path from namespace path
+// /dev/nvme1n1 -> /dev/nvme1
+static int extract_controller_path(const char *ns_path, char *ctrl_path, size_t len) {
+    if (!ns_path || !ctrl_path || len == 0) {
+        return -1;
+    }
+    
+    const char *basename = strrchr(ns_path, '/');
+    if (!basename) {
+        basename = ns_path;
+    } else {
+        basename++;
+    }
+    
+    // Check format: nvmeXnY where X is controller, Y is namespace
+    if (strncmp(basename, "nvme", 4) != 0) {
+        return -1;
+    }
+    
+    const char *p = basename + 4;
+    const char *n_pos = strchr(p, 'n');
+    if (!n_pos) {
+        return -1;
+    }
+    
+    size_t ctrl_len = n_pos - basename;
+    const char *dir = strrchr(ns_path, '/');
+    if (dir) {
+        size_t dir_len = dir - ns_path + 1;
+        if (snprintf(ctrl_path, len, "%.*s%.*s", 
+                     (int)dir_len, ns_path, (int)ctrl_len, basename) >= (int)len) {
+            return -1;
+        }
+    } else {
+        if (snprintf(ctrl_path, len, "%.*s", (int)ctrl_len, basename) >= (int)len) {
+            return -1;
+        }
+    }
+    
+    return 0;
+}
+
 int nvme_wrapper_connect_device(struct nvme_context *ctx,
                                 const char *device_path) {
-    if (!ctx || !device_path || !ctx->initialized || !ctx->global_ctx) {
+    if (!ctx || !device_path || !ctx->initialized) {
         return -EINVAL;
     }
     
@@ -115,23 +150,28 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
         return 0;
     }
     
-    // Use libnvme's nvme_open() to get transport handle (like nvme-cli does)
-    struct nvme_transport_handle *hdl = NULL;
-    int err = nvme_open(ctx->global_ctx, device_path, &hdl);
-    if (err != 0) {
-        fprintf(stderr, "Error: Failed to open NVMe device %s: %s\n", 
-                device_path, nvme_strerror(err));
-        return err;
+    // Extract controller path from namespace path
+    char ctrl_path[64];
+    if (extract_controller_path(device_path, ctrl_path, sizeof(ctrl_path)) != 0) {
+        fprintf(stderr, "Error: Invalid device path format: %s\n", device_path);
+        return -1;
     }
     
-    ctx->hdl = hdl;
-    strncpy(ctx->device_path, device_path, sizeof(ctx->device_path) - 1);
+    // Use libnvme's nvme_open() helper (returns fd, not handle)
+    ctx->ctrl_fd = nvme_open(ctrl_path);
+    if (ctx->ctrl_fd < 0) {
+        fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
+                ctrl_path, strerror(errno));
+        return -1;
+    }
+    
+    strncpy(ctx->device_path, ctrl_path, sizeof(ctx->device_path) - 1);
     ctx->device_path[sizeof(ctx->device_path) - 1] = '\0';
     
     // Discover namespaces using libnvme
-    if (discover_namespaces(ctx, hdl) != 0) {
-        nvme_close(hdl);
-        ctx->hdl = NULL;
+    if (discover_namespaces(ctx, ctx->ctrl_fd) != 0) {
+        close(ctx->ctrl_fd);
+        ctx->ctrl_fd = -1;
         return -1;
     }
     
@@ -219,23 +259,29 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         return -1;
     }
     
-    // Use libnvme's nvme_open() to get transport handle (like nvme-cli does)
-    struct nvme_transport_handle *hdl = NULL;
-    ret = nvme_open(ctx->global_ctx, device_path, &hdl);
-    if (ret != 0) {
-        fprintf(stderr, "Error: Failed to open NVMe device %s: %s\n", 
-                device_path, nvme_strerror(ret));
-        return ret;
+    // Extract controller path from namespace path if needed
+    char ctrl_path[64];
+    if (extract_controller_path(device_path, ctrl_path, sizeof(ctrl_path)) != 0) {
+        // If extraction fails, assume it's already a controller path
+        strncpy(ctrl_path, device_path, sizeof(ctrl_path) - 1);
+        ctrl_path[sizeof(ctrl_path) - 1] = '\0';
     }
     
-    ctx->hdl = hdl;
-    strncpy(ctx->device_path, device_path, sizeof(ctx->device_path) - 1);
+    // Use libnvme's nvme_open() helper (returns fd, not handle)
+    ctx->ctrl_fd = nvme_open(ctrl_path);
+    if (ctx->ctrl_fd < 0) {
+        fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
+                ctrl_path, strerror(errno));
+        return -1;
+    }
+    
+    strncpy(ctx->device_path, ctrl_path, sizeof(ctx->device_path) - 1);
     ctx->device_path[sizeof(ctx->device_path) - 1] = '\0';
     
     // Discover namespaces using libnvme
-    if (discover_namespaces(ctx, hdl) != 0) {
-        nvme_close(hdl);
-        ctx->hdl = NULL;
+    if (discover_namespaces(ctx, ctx->ctrl_fd) != 0) {
+        close(ctx->ctrl_fd);
+        ctx->ctrl_fd = -1;
         return -1;
     }
     
@@ -243,18 +289,25 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
     return 0;
 }
 
-struct nvme_transport_handle *nvme_wrapper_get_handle(struct nvme_context *ctx) {
+int nvme_wrapper_get_ctrl_fd(struct nvme_context *ctx) {
     if (!ctx || !ctx->connected) {
-        return NULL;
+        return -1;
     }
-    return ctx->hdl;
+    return ctx->ctrl_fd;
 }
 
-struct nvme_global_ctx *nvme_wrapper_get_global_ctx(struct nvme_context *ctx) {
-    if (!ctx || !ctx->initialized) {
-        return NULL;
+int nvme_wrapper_get_ns_fd(struct nvme_context *ctx, uint32_t nsid) {
+    if (!ctx || !ctx->connected) {
+        return -1;
     }
-    return ctx->global_ctx;
+    
+    for (uint32_t i = 0; i < ctx->num_ns; i++) {
+        if (ctx->ns_list[i].nsid == nsid) {
+            return ctx->ns_list[i].fd;
+        }
+    }
+    
+    return -1;
 }
 
 uint64_t nvme_wrapper_get_ns_size(struct nvme_context *ctx, uint32_t nsid) {
@@ -301,11 +354,11 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         return -EINVAL;
     }
     
-    if (!ctx->connected || !ctx->hdl) {
+    if (!ctx->connected || ctx->ctrl_fd < 0) {
         static int not_connected_logged = 0;
         if (!not_connected_logged) {
-            fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d, hdl=%p, initialized=%d)\n", 
-                    ctx->connected, ctx->hdl, ctx->initialized);
+            fprintf(stderr, "nvme_wrapper_submit_passthru: ctx not connected (connected=%d, ctrl_fd=%d, initialized=%d)\n", 
+                    ctx->connected, ctx->ctrl_fd, ctx->initialized);
             not_connected_logged = 1;
         }
         return -EINVAL;
@@ -361,15 +414,23 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         cmd->data_len = 0;
     }
     
-    // Use libnvme's nvme_submit_io_passthru() (like nvme-cli does)
+    // Use namespace FD if available, otherwise use controller FD
+    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    
+    // Use libnvme's nvme_submit_io_passthru() (takes fd, not handle)
     // This handles all the low-level details including proper command formatting
-    int err = nvme_submit_io_passthru(ctx->hdl, cmd);
+    __u32 result = 0;
+    int err = nvme_submit_io_passthru(target_fd, cmd, &result);
+    
+    // Store result in command structure
+    cmd->result = result;
     
     // Debug: Print command details (first time only)
     static int debug_count = 0;
     if (debug_count < 1) {
-        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, data_len=%u\n",
-                cmd->opcode, cmd->nsid, cmd->data_len);
+        fprintf(stderr, "DEBUG: Submitting NVMe command via libnvme: opcode=0x%x, nsid=%u, data_len=%u, fd=%d\n",
+                cmd->opcode, cmd->nsid, cmd->data_len, target_fd);
         fprintf(stderr, "DEBUG: Command CDW10=0x%x (num_ranges-1), CDW11=0x%x, CDW12=0x%x\n",
                 cmd->cdw10, cmd->cdw11, cmd->cdw12);
         debug_count++;
@@ -380,14 +441,13 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         static int error_log_count = 0;
         if (error_log_count < 5) {
             fprintf(stderr, "ERROR: NVMe command submission failed: %s (opcode=0x%x, nsid=%u, data_len=%u)\n",
-                    nvme_strerror(err), cmd->opcode, nsid, cmd->data_len);
+                    strerror(errno), cmd->opcode, nsid, cmd->data_len);
             error_log_count++;
         }
         return err;
     }
     
     // Check command status from result field
-    __u32 result = cmd->result;
     __u16 status = (result >> 1) & 0x7FFF;
     __u8 status_type = (status >> 9) & 0x7;
     __u16 status_code = status & 0xFF;
@@ -427,22 +487,21 @@ void nvme_wrapper_cleanup(struct nvme_context *ctx) {
         return;
     }
     
-    // Close transport handle (like nvme-cli does)
-    if (ctx->hdl) {
-        nvme_close(ctx->hdl);
-        ctx->hdl = NULL;
-    }
-    
-    // Free namespace list
+    // Close namespace file descriptors
     if (ctx->ns_list) {
+        for (uint32_t i = 0; i < ctx->num_ns; i++) {
+            if (ctx->ns_list[i].fd >= 0) {
+                close(ctx->ns_list[i].fd);
+            }
+        }
         free(ctx->ns_list);
         ctx->ns_list = NULL;
     }
     
-    // Free global context (like nvme-cli does)
-    if (ctx->global_ctx) {
-        nvme_free_global_ctx(ctx->global_ctx);
-        ctx->global_ctx = NULL;
+    // Close controller file descriptor
+    if (ctx->ctrl_fd >= 0) {
+        close(ctx->ctrl_fd);
+        ctx->ctrl_fd = -1;
     }
     
     ctx->connected = false;

@@ -22,21 +22,21 @@ struct xcopy_transport_config {
     char *hostnqn;             // Host NQN (optional)
 };
 
-// Namespace information (without FD - libnvme manages that)
+// Namespace information
 struct nvme_ns_info {
     uint32_t nsid;
     uint64_t size_blocks;
     uint32_t block_size;
+    int fd;                    // File descriptor for this namespace
 };
 
-// NVMe context - uses libnvme's transport handle (like nvme-cli)
+// NVMe context - uses libnvme's low-level API (file descriptors)
 struct nvme_context {
-    struct nvme_global_ctx *global_ctx;      // libnvme global context
-    struct nvme_transport_handle *hdl;       // libnvme transport handle
-    char device_path[64];                    // Device path (e.g., /dev/nvme0n1) for reference
-    struct nvme_ns_info *ns_list;            // List of namespaces (without FDs)
-    uint32_t num_ns;                         // Number of namespaces
-    uint32_t ns_capacity;                    // Capacity of ns_list array
+    int ctrl_fd;               // Controller file descriptor (from nvme_open)
+    char device_path[64];      // Device path (e.g., /dev/nvme0)
+    struct nvme_ns_info *ns_list;  // List of namespaces
+    uint32_t num_ns;           // Number of namespaces
+    uint32_t ns_capacity;      // Capacity of ns_list array
     bool initialized;
     bool connected;
 };
@@ -55,11 +55,11 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
 int nvme_wrapper_connect_device(struct nvme_context *ctx,
                                 const char *device_path);
 
-// Get transport handle (for libnvme API usage)
-struct nvme_transport_handle *nvme_wrapper_get_handle(struct nvme_context *ctx);
+// Get controller file descriptor
+int nvme_wrapper_get_ctrl_fd(struct nvme_context *ctx);
 
-// Get global context (for libnvme API usage)
-struct nvme_global_ctx *nvme_wrapper_get_global_ctx(struct nvme_context *ctx);
+// Get namespace file descriptor by ID
+int nvme_wrapper_get_ns_fd(struct nvme_context *ctx, uint32_t nsid);
 
 // Get namespace size in blocks
 uint64_t nvme_wrapper_get_ns_size(struct nvme_context *ctx, uint32_t nsid);

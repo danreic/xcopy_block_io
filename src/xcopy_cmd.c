@@ -56,28 +56,28 @@ int xcopy_cmd_build(struct xcopy_operation *op,
                             snsids, nlbs, slbas, sopts,
                             eilbrts_short, elbatms, elbats, num_ranges);
     
-    // Use libnvme's nvme_init_copy() to build the command (like nvme-cli does)
-    // Format 2 = cross-namespace copy
-    // Parameters: namespace_id, sdlba, num_ranges, format, prinfor, prinfow, 
-    //             expected_ilbrt, dtype, limited_retry, force_unit_access, 
-    //             fua, lr, dsm, dspec, ranges
-    nvme_init_copy(&op->cmd, dst_nsid, sdlba, num_ranges, 2,  // format 2 for cross-namespace
-                   0,  // prinfor (protection info read)
-                   0,  // prinfow (protection info write)
-                   0,  // expected_ilbrt
-                   0,  // dtype (directive type)
-                   false,  // limited_retry
-                   false,  // force_unit_access
-                   false,  // fua
-                   false,  // lr
-                   0,  // dsm
-                   0,  // dspec
-                   (struct nvme_copy_range *)op->ranges);  // Cast to format 0 structure pointer
+    // Build the NVMe Copy command structure manually
+    // Set command opcode (NVMe Copy = 0x19)
+    op->cmd.opcode = NVME_OPC_COPY;
     
-    // Set data length and pointer
+    // Set destination namespace ID
+    op->cmd.nsid = dst_nsid;
+    
+    // Set number of ranges (0-based, so num_ranges-1) in CDW10
+    // Format 2 = cross-namespace copy (bits 31:16 = format, bits 15:0 = num_ranges-1)
+    op->cmd.cdw10 = ((2 << 16) | ((num_ranges - 1) & 0xFFFF));
+    
+    // Set destination starting LBA in CDW11 and CDW12
+    op->cmd.cdw11 = (uint32_t)(sdlba & 0xFFFFFFFF);
+    op->cmd.cdw12 = (uint32_t)((sdlba >> 32) & 0xFFFFFFFF);
+    
+    // Set flags and data for passthrough command
+    op->cmd.flags = 0;  // No special flags
+    op->cmd.rsvd1 = 0;  // Reserved field - kernel will manage command_id
     op->cmd.data_len = xcopy_cmd_get_data_size(num_ranges);
-    op->cmd.addr = (__u64)(uintptr_t)op->ranges;
+    op->cmd.metadata_len = 0;
     op->cmd.timeout_ms = 60000;  // 60 second timeout for NVMe-TCP
+    op->cmd.addr = (__u64)(uintptr_t)op->ranges;
     
     // Initialize operation state
     op->completed = false;
