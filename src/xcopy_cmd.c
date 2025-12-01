@@ -30,10 +30,10 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     // Common fields: opcode, flags, rsvd1, nsid, cdw2-cdw15, data_len, metadata_len
     // Data pointer is typically passed separately to nvme_submit_io_passthru()
     op->cmd.flags = 0;  // No special flags
-    op->cmd.rsvd1 = 0;
+    op->cmd.rsvd1 = 0;  // Reserved field - kernel will manage command_id
     op->cmd.data_len = xcopy_cmd_get_data_size(num_ranges);
     op->cmd.metadata_len = 0;
-    op->cmd.timeout_ms = 0;  // Use default timeout
+    op->cmd.timeout_ms = 60000;  // 60 second timeout for NVMe-TCP (commands may take time over network)
     // Note: Data pointer (op->ranges) is passed separately to submit function
     
     // Copy range descriptors and convert to little-endian (NVMe spec requirement)

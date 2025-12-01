@@ -443,16 +443,9 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Prepare ioctl structure
     struct nvme_passthru_cmd ioctl_cmd = *cmd;
     
-    // Set command_id in bytes 2-3 of the NVMe command structure
-    // The kernel may require a non-zero command_id for proper command queuing
-    // Command ID is at offset 2-3 in the NVMe command (little-endian)
-    static uint16_t command_id_counter = 1;
-    uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
-    // Set command_id at bytes 2-3 (little-endian)
-    cmd_bytes[2] = command_id_counter & 0xFF;
-    cmd_bytes[3] = (command_id_counter >> 8) & 0xFF;
-    command_id_counter++;
-    if (command_id_counter == 0) command_id_counter = 1;  // Avoid 0
+    // Don't manually set command_id - let the kernel driver manage it
+    // The kernel will assign command IDs automatically for proper command queuing
+    // For NVMe-TCP, the kernel driver handles command submission and completion
     
     // Set data pointer if provided
     // For NVMe-TCP, buffers must be page-aligned for DMA operations
