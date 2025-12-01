@@ -539,6 +539,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         if (cmd->opcode == NVME_OPC_COPY && ioctl_cmd.data_len == 0) {
             fprintf(stderr, "ERROR: XCOPY command has data_len=0! This is invalid - XCOPY requires range descriptors.\n");
         }
+        // Print hex dump of command structure (first 64 bytes) for comparison with nvme-cli
+        if (debug_count < 1) {
+            fprintf(stderr, "DEBUG: Command structure hex dump (first 64 bytes) - compare with nvme-cli:\n");
+            uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
+            for (int i = 0; i < 64 && i < (int)sizeof(ioctl_cmd); i += 16) {
+                fprintf(stderr, "  %04x: ", i);
+                for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
+                    fprintf(stderr, "%02x ", cmd_bytes[i + j]);
+                }
+                fprintf(stderr, "\n");
+            }
+        }
         debug_count++;
     }
     
