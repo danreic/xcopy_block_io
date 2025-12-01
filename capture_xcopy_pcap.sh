@@ -58,15 +58,30 @@ echo "TEST_PCAP_$(date +%s)" | sudo dd of="$DEVICE" bs=512 seek=$SRC_LBA count=$
 PCAP_NVME_CLI="/tmp/nvme_cli_xcopy.pcap"
 sudo tcpdump -i "$INTERFACE" -w "$PCAP_NVME_CLI" "$FILTER" 2>/dev/null &
 TCPDUMP_PID=$!
-sleep 1
+sleep 2
 
 # Run nvme-cli command
+echo "Running nvme-cli command..."
 sudo nvme copy "$DEVICE" --sdlba=$SRC_LBA --blocks=$((BLOCKS-1)) --slbs=$DST_LBA 2>&1
+NVME_CLI_EXIT=$?
 
-# Stop capture
-sleep 1
-sudo kill $TCPDUMP_PID 2>/dev/null
-wait $TCPDUMP_PID 2>/dev/null
+# Stop capture - find and kill tcpdump process
+sleep 2
+echo "Stopping packet capture..."
+# Find tcpdump process writing to our file
+TCPDUMP_PIDS=$(pgrep -f "tcpdump.*$PCAP_NVME_CLI" 2>/dev/null || true)
+if [ -n "$TCPDUMP_PIDS" ]; then
+    for pid in $TCPDUMP_PIDS; do
+        sudo kill -TERM $pid 2>/dev/null || true
+    done
+    sleep 1
+    # Force kill if still running
+    for pid in $TCPDUMP_PIDS; do
+        if kill -0 $pid 2>/dev/null; then
+            sudo kill -KILL $pid 2>/dev/null || true
+        fi
+    done
+fi
 
 echo "Captured nvme-cli packets: $PCAP_NVME_CLI"
 echo ""
@@ -80,15 +95,30 @@ echo ""
 PCAP_XCOPY_TOOL="/tmp/xcopy_tool_xcopy.pcap"
 sudo tcpdump -i "$INTERFACE" -w "$PCAP_XCOPY_TOOL" "$FILTER" 2>/dev/null &
 TCPDUMP_PID=$!
-sleep 1
+sleep 2
 
 # Run our tool
+echo "Running xcopy_tool..."
 sudo ./xcopy_tool --src-device "$DEVICE" --dst-device "$DEVICE" --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1 -v 2>&1 | head -50
+XCOPY_TOOL_EXIT=$?
 
-# Stop capture
-sleep 1
-sudo kill $TCPDUMP_PID 2>/dev/null
-wait $TCPDUMP_PID 2>/dev/null
+# Stop capture - find and kill tcpdump process
+sleep 2
+echo "Stopping packet capture..."
+# Find tcpdump process writing to our file
+TCPDUMP_PIDS=$(pgrep -f "tcpdump.*$PCAP_XCOPY_TOOL" 2>/dev/null || true)
+if [ -n "$TCPDUMP_PIDS" ]; then
+    for pid in $TCPDUMP_PIDS; do
+        sudo kill -TERM $pid 2>/dev/null || true
+    done
+    sleep 1
+    # Force kill if still running
+    for pid in $TCPDUMP_PIDS; do
+        if kill -0 $pid 2>/dev/null; then
+            sudo kill -KILL $pid 2>/dev/null || true
+        fi
+    done
+fi
 
 echo "Captured xcopy_tool packets: $PCAP_XCOPY_TOOL"
 echo ""
