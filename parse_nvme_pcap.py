@@ -16,11 +16,13 @@ def parse_nvme_tcp_pdu(data):
     # Byte 0: PDU Type
     # Byte 1: Flags
     # Bytes 2-3: Header Digest (if enabled)
-    # Bytes 4-7: PDU Length (24-bit) + reserved
+    # Bytes 4-6: PDU Length (24-bit, little-endian)
+    # Byte 7: Reserved
     
     pdu_type = data[0]
     flags = data[1]
-    pdu_length = struct.unpack('<I', data[4:8])[0] & 0xFFFFFF
+    # PDU length is 24-bit in bytes 4-6 (little-endian)
+    pdu_length = data[4] | (data[5] << 8) | (data[6] << 16)
     
     return {
         'pdu_type': pdu_type,
@@ -101,11 +103,22 @@ def analyze_pcap(filename):
     all_pdu_types = set()
     
     # First pass: collect all TCP payloads and look for XCOPY opcode directly
+    # Also track TCP streams for reassembly
+    tcp_streams = {}  # (src_ip, src_port, dst_ip, dst_port) -> list of payloads
+    
     for pkt in packets:
         if TCP in pkt and Raw in pkt:
             tcp = pkt[TCP]
             raw = pkt[Raw]
             data = bytes(raw.load)
+            
+            # Track TCP stream
+            if 'IP' in pkt:
+                ip = pkt['IP']
+                stream_key = (ip.src, tcp.sport, ip.dst, tcp.dport)
+                if stream_key not in tcp_streams:
+                    tcp_streams[stream_key] = []
+                tcp_streams[stream_key].append(data)
             
             # Look for XCOPY opcode (0x19) directly in the payload
             # This helps us find commands even if PDU parsing fails
@@ -135,9 +148,17 @@ def analyze_pcap(filename):
                 all_pdu_types.add(pdu['pdu_type'])
                 
                 # PDU Type 0x00 = NVMe command, 0x04 = I/O command
+                # For I/O commands (type 4), the NVMe command starts after the PDU header
+                # For type 4, there's an additional 8-byte I/O command header before the NVMe command
                 if pdu['pdu_type'] in [0x00, 0x04]:
-                    if len(pdu['data']) >= 64:
-                        cmd = parse_nvme_command(pdu['data'])
+                    # For PDU type 4 (I/O command), skip 8-byte I/O command header
+                    cmd_offset = 0
+                    if pdu['pdu_type'] == 0x04:
+                        cmd_offset = 8  # I/O command header is 8 bytes
+                    
+                    if len(pdu['data']) >= cmd_offset + 64:
+                        cmd_data = pdu['data'][cmd_offset:]
+                        cmd = parse_nvme_command(cmd_data)
                         if cmd and cmd['opcode'] == 0x19:  # XCOPY
                             # Check if we already found this one
                             found = False
@@ -147,16 +168,19 @@ def analyze_pcap(filename):
                                     found = True
                                     break
                             if not found:
+                                range_data = cmd_data[64:] if len(cmd_data) > 64 else b''
                                 xcopy_commands.append({
                                     'packet': pkt,
                                     'pdu': pdu,
                                     'command': cmd,
-                                    'data': pdu['data'][64:] if len(pdu['data']) > 64 else b''
+                                    'data': range_data
                                 })
                 
-                offset += 8 + pdu['pdu_length']
-                if offset >= len(data):
+                # Move to next PDU
+                next_offset = offset + 8 + pdu['pdu_length']
+                if next_offset > len(data) or next_offset <= offset:
                     break
+                offset = next_offset
             
             # Also collect data packets for analysis
             if len(data) > 64:
@@ -226,7 +250,31 @@ def analyze_pcap(filename):
                 seen.add(sig)
                 unique_commands.append(xcopy)
     
-    # If no commands found, show some debug info
+    # If no commands found, search all TCP streams for 0x19
+    if not unique_commands:
+        print("\nNo XCOPY commands found in individual packets. Searching TCP streams...")
+        for stream_key, stream_data in tcp_streams.items():
+            # Reassemble stream
+            stream_payload = b''.join(stream_data)
+            for i in range(len(stream_payload) - 64):
+                if stream_payload[i] == 0x19:
+                    print(f"\nFound 0x19 at offset {i} in stream {stream_key}")
+                    cmd = parse_nvme_command(stream_payload[i:])
+                    if cmd and cmd['opcode'] == 0x19 and cmd['nsid'] > 0:
+                        print(f"  Valid XCOPY command found!")
+                        print(f"  NSID: {cmd['nsid']}, CDW10: 0x{cmd['cdw10']:08x}")
+                        range_data = stream_payload[i+64:i+64+32] if len(stream_payload) >= i+64+32 else b''
+                        if len(range_data) >= 32:
+                            range_desc = parse_xcopy_range_descriptor(range_data)
+                            if range_desc:
+                                print(f"  Range: src_lba={range_desc['src_lba']}, dst_lba={range_desc['dst_lba']}, num_blocks={range_desc['num_blocks']}")
+                        unique_commands.append({
+                            'command': cmd,
+                            'data': range_data,
+                            'stream': stream_key
+                        })
+    
+    # If still no commands found, show some debug info
     if not unique_commands and data_packets:
         print("\nNo XCOPY commands found. Showing sample packet data:")
         sample = data_packets[0]
