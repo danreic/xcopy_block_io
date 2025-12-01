@@ -14,7 +14,8 @@
 #include <sys/ioctl.h>
 #include <linux/nvme_ioctl.h>
 #include <endian.h>
-#include <nvme.h>  // libnvme high-level API
+#include <syslog.h>  // For LOG_INFO
+// libnvme.h is already included via nvme_wrapper.h
 
 int nvme_wrapper_init(struct nvme_context *ctx,
                      struct xcopy_transport_config *transport) {

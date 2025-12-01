@@ -3,7 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include <endian.h>
-#include <nvme.h>  // libnvme high-level API
+// libnvme.h is already included via xcopy_cmd.h
 
 int xcopy_cmd_build(struct xcopy_operation *op,
                     uint32_t dst_nsid,
