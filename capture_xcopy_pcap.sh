@@ -45,38 +45,44 @@ if ! check_transport; then
     echo ""
 fi
 
-# Try to find interface with NVMe-TCP traffic
-# First, try to get interface from nvme connection info
-INTERFACE=""
-if command -v nvme &> /dev/null; then
-    # Try to get connection info
-    NVME_INFO=$(nvme list 2>/dev/null | grep "$DEVICE")
-    echo "NVMe device info: $NVME_INFO"
-    echo ""
-fi
-
-# If we can't determine, try common interfaces
-if [ -z "$INTERFACE" ]; then
-    # Try default route interface first
-    INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1 2>/dev/null)
-    if [ -z "$INTERFACE" ]; then
-        INTERFACE=$(route -n get default 2>/dev/null | grep interface | awk '{print $2}' | head -1)
+# Check for USE_ANY_INTERFACE first (before auto-detection)
+if [ "$USE_ANY_INTERFACE" = "1" ]; then
+    INTERFACE="any"
+    echo "Using 'any' interface (specified via USE_ANY_INTERFACE=1)"
+else
+    # Try to find interface with NVMe-TCP traffic
+    # First, try to get interface from nvme connection info
+    INTERFACE=""
+    if command -v nvme &> /dev/null; then
+        # Try to get connection info
+        NVME_INFO=$(nvme list 2>/dev/null | grep "$DEVICE")
+        echo "NVMe device info: $NVME_INFO"
+        echo ""
     fi
-    # If still empty, try first non-lo interface
+    
+    # If we can't determine, try common interfaces
     if [ -z "$INTERFACE" ]; then
-        INTERFACE=$(list_interfaces | head -1)
+        # Try default route interface first
+        INTERFACE=$(ip route | grep default | awk '{print $5}' | head -1 2>/dev/null)
+        if [ -z "$INTERFACE" ]; then
+            INTERFACE=$(route -n get default 2>/dev/null | grep interface | awk '{print $2}' | head -1)
+        fi
+        # If still empty, try first non-lo interface
+        if [ -z "$INTERFACE" ]; then
+            INTERFACE=$(list_interfaces | head -1)
+        fi
     fi
-fi
-
-if [ -z "$INTERFACE" ]; then
-    echo "ERROR: Could not determine network interface"
-    echo "Please specify interface manually: INTERFACE=eth0 $0"
-    exit 1
-fi
-
-# Allow override via environment variable
-if [ -n "$CAPTURE_INTERFACE" ]; then
-    INTERFACE="$CAPTURE_INTERFACE"
+    
+    if [ -z "$INTERFACE" ]; then
+        echo "ERROR: Could not determine network interface"
+        echo "Please specify interface manually: INTERFACE=eth0 $0"
+        exit 1
+    fi
+    
+    # Allow override via environment variable
+    if [ -n "$CAPTURE_INTERFACE" ]; then
+        INTERFACE="$CAPTURE_INTERFACE"
+    fi
 fi
 
 echo "Using network interface: $INTERFACE"
@@ -111,6 +117,15 @@ find_interface_for_ip() {
 }
 
 SERVER_IP=$(get_server_ip)
+if [ -z "$SERVER_IP" ]; then
+    # Try to extract IP from existing connections
+    if command -v ss &> /dev/null; then
+        SERVER_IP=$(ss -tnp | grep ":$NVME_PORT" | grep ESTAB | head -1 | awk '{print $5}' | cut -d: -f1 | sort -u | head -1)
+    elif command -v netstat &> /dev/null; then
+        SERVER_IP=$(netstat -tnp 2>/dev/null | grep ":$NVME_PORT" | grep ESTAB | head -1 | awk '{print $5}' | cut -d: -f1)
+    fi
+fi
+
 if [ -n "$SERVER_IP" ]; then
     echo "Server IP: $SERVER_IP"
     # Try to find interface for this IP
@@ -141,11 +156,7 @@ else
 fi
 echo ""
 
-# Option to use 'any' interface to capture on all interfaces
-if [ "$USE_ANY_INTERFACE" = "1" ]; then
-    echo "Using 'any' interface to capture on all interfaces..."
-    INTERFACE="any"
-fi
+# Remove duplicate check (already handled above)
 
 # Test 1: Capture nvme-cli XCOPY command
 echo "=== Test 1: Capturing nvme-cli XCOPY command ==="
@@ -157,9 +168,19 @@ echo "TEST_PCAP_$(date +%s)" | sudo dd of="$DEVICE" bs=512 seek=$SRC_LBA count=$
 
 # Start packet capture in background
 PCAP_NVME_CLI="/tmp/nvme_cli_xcopy.pcap"
-sudo tcpdump -i "$INTERFACE" -w "$PCAP_NVME_CLI" "$FILTER" 2>/dev/null &
+echo "Starting tcpdump on interface '$INTERFACE' with filter '$FILTER'..."
+# Remove old pcap file
+rm -f "$PCAP_NVME_CLI"
+# Start tcpdump with verbose output to stderr so we can see if it's working
+sudo tcpdump -i "$INTERFACE" -w "$PCAP_NVME_CLI" "$FILTER" -s 0 2>&1 &
 TCPDUMP_PID=$!
-sleep 2
+sleep 3  # Give tcpdump more time to start
+# Verify tcpdump is running
+if ! kill -0 $TCPDUMP_PID 2>/dev/null; then
+    echo "ERROR: tcpdump failed to start!"
+    exit 1
+fi
+echo "tcpdump started (PID: $TCPDUMP_PID)"
 
 # Run nvme-cli command
 echo "Running nvme-cli command..."
@@ -202,9 +223,19 @@ echo ""
 
 # Start packet capture in background
 PCAP_XCOPY_TOOL="/tmp/xcopy_tool_xcopy.pcap"
-sudo tcpdump -i "$INTERFACE" -w "$PCAP_XCOPY_TOOL" "$FILTER" 2>/dev/null &
+echo "Starting tcpdump on interface '$INTERFACE' with filter '$FILTER'..."
+# Remove old pcap file
+rm -f "$PCAP_XCOPY_TOOL"
+# Start tcpdump with verbose output to stderr so we can see if it's working
+sudo tcpdump -i "$INTERFACE" -w "$PCAP_XCOPY_TOOL" "$FILTER" -s 0 2>&1 &
 TCPDUMP_PID=$!
-sleep 2
+sleep 3  # Give tcpdump more time to start
+# Verify tcpdump is running
+if ! kill -0 $TCPDUMP_PID 2>/dev/null; then
+    echo "ERROR: tcpdump failed to start!"
+    exit 1
+fi
+echo "tcpdump started (PID: $TCPDUMP_PID)"
 
 # Run our tool
 echo "Running xcopy_tool..."
