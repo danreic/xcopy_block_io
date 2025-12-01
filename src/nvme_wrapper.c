@@ -428,10 +428,19 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         cmd->data_len = 0;
     }
     
-    // For XCOPY commands, use controller FD (not namespace FD)
-    // XCOPY is an I/O command but needs to be submitted via controller
-    // The namespace ID is specified in the command structure itself
-    int target_fd = ctx->ctrl_fd;
+    // For XCOPY commands, try namespace FD first (like nvme-cli does for I/O commands)
+    // If namespace FD is not available, fall back to controller FD
+    // XCOPY is an I/O command, so it should use namespace FD
+    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
+    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    
+    // Debug: Log which FD we're using
+    static int fd_choice_logged = 0;
+    if (!fd_choice_logged) {
+        fprintf(stderr, "DEBUG: Using %s for XCOPY command (ns_fd=%d, ctrl_fd=%d)\n",
+                (ns_fd >= 0) ? "namespace FD" : "controller FD", ns_fd, ctx->ctrl_fd);
+        fd_choice_logged = 1;
+    }
     
     // Use libnvme's nvme_submit_io_passthru() (takes fd, not handle)
     // This handles all the low-level details including proper command formatting
@@ -468,10 +477,15 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     __u16 status_code = status & 0xFF;
     
     // Log result (first few times or on errors)
+    // Note: nvme_submit_io_passthru may return number of bytes transferred on success
+    // Check the status field in result to determine actual command status
     static int result_log_count = 0;
-    if (result_log_count < 3 || status != 0 || result != 0) {
-        fprintf(stderr, "DEBUG: Command submission returned %d, command result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
+    if (result_log_count < 3 || status != 0 || result != 0 || err != 0) {
+        fprintf(stderr, "DEBUG: Command submission: err=%d (0=success, <0=error), result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
                 err, result, status, status_type, status_code);
+        if (err > 0) {
+            fprintf(stderr, "DEBUG: Note: Positive return value (%d) may indicate bytes transferred, check status field\n", err);
+        }
         result_log_count++;
     }
     
