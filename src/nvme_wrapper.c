@@ -513,20 +513,18 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     }
     
     // XCOPY is an I/O command (opcode 0x19)
-    // For NVMe-TCP, try controller FD first to ensure NSID is preserved
-    // When using namespace FD, the kernel might override NSID based on the FD
-    // Using controller FD ensures the NSID in the command is used
+    // For NVMe-TCP, use namespace FD (like nvme-cli does)
+    // The kernel will use the NSID from the FD, but we still need to set it in the command
     int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
     // Debug: Check which FD we're using
     static int fd_debug_count = 0;
     if (fd_debug_count < 3) {
-        fprintf(stderr, "DEBUG: ns_fd=%d, ctrl_fd=%d, will use %s (using ctrl_fd to preserve NSID)\n",
-                ns_fd, ctx->ctrl_fd, "ctrl_fd");
+        fprintf(stderr, "DEBUG: ns_fd=%d, ctrl_fd=%d, will use %s\n",
+                ns_fd, ctx->ctrl_fd, (ns_fd >= 0) ? "ns_fd" : "ctrl_fd");
         fd_debug_count++;
     }
-    // Use controller FD to ensure NSID is preserved in the command
-    int target_fd = ctx->ctrl_fd;
-    const char *fd_type = "ctrl_fd";
+    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    const char *fd_type = (ns_fd >= 0) ? "ns_fd" : "ctrl_fd";
     
     // Debug: Print command details (first time only, or if data is missing)
     static int debug_count = 0;
