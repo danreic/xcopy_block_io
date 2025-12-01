@@ -18,6 +18,8 @@
 
 int nvme_wrapper_init(struct nvme_context *ctx,
                      struct xcopy_transport_config *transport) {
+    (void)transport;  // Unused parameter - kept for API compatibility
+    
     if (!ctx) {
         return -EINVAL;
     }
@@ -181,7 +183,7 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
 
 int nvme_wrapper_connect(struct nvme_context *ctx,
                         struct xcopy_transport_config *transport) {
-    if (!ctx || !transport || !ctx->initialized || !ctx->global_ctx) {
+    if (!ctx || !transport || !ctx->initialized) {
         return -EINVAL;
     }
     
