@@ -260,19 +260,28 @@ def analyze_pcap(filename):
                 if stream_payload[i] == 0x19:
                     print(f"\nFound 0x19 at offset {i} in stream {stream_key}")
                     cmd = parse_nvme_command(stream_payload[i:])
-                    if cmd and cmd['opcode'] == 0x19 and cmd['nsid'] > 0:
+                    if cmd and cmd['opcode'] == 0x19:
                         print(f"  Valid XCOPY command found!")
                         print(f"  NSID: {cmd['nsid']}, CDW10: 0x{cmd['cdw10']:08x}")
+                        print(f"  Command hex: {cmd['raw'].hex()}")
                         range_data = stream_payload[i+64:i+64+32] if len(stream_payload) >= i+64+32 else b''
+                        print(f"  Range data length: {len(range_data)} bytes")
                         if len(range_data) >= 32:
                             range_desc = parse_xcopy_range_descriptor(range_data)
                             if range_desc:
-                                print(f"  Range: src_lba={range_desc['src_lba']}, dst_lba={range_desc['dst_lba']}, num_blocks={range_desc['num_blocks']}")
+                                print(f"  Range: src_nsid={range_desc['src_nsid']}, src_lba={range_desc['src_lba']}, dst_lba={range_desc['dst_lba']}, num_blocks={range_desc['num_blocks']}")
+                                print(f"  Range hex: {range_desc['raw'].hex()}")
                         unique_commands.append({
                             'command': cmd,
                             'data': range_data,
-                            'stream': stream_key
+                            'stream': stream_key,
+                            'offset': i
                         })
+                    else:
+                        print(f"  Failed to parse as NVMe command (cmd={cmd})")
+                        # Show context
+                        context = stream_payload[max(0,i-8):min(len(stream_payload),i+80)]
+                        print(f"  Context (offset {max(0,i-8)}-{min(len(stream_payload),i+80)}): {context.hex()}")
     
     # If still no commands found, show some debug info
     if not unique_commands and data_packets:
