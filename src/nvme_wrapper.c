@@ -132,7 +132,7 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
         snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
                  (int)(sizeof(ns_path) - 10), ctx->device_path, nsid);
         
-        int ns_fd = open(ns_path, O_RDWR);
+        int ns_fd = open(ns_path, O_RDONLY);  // Match nvme-cli: use O_RDONLY for namespace device
         if (ns_fd < 0) {
             break;
         }
@@ -280,7 +280,7 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         snprintf(ns_path, sizeof(ns_path), "%.*sn%u", 
                  (int)(sizeof(ns_path) - 10), device_path, nsid);
         
-        int ns_fd = open(ns_path, O_RDWR);
+        int ns_fd = open(ns_path, O_RDONLY);  // Match nvme-cli: use O_RDONLY for namespace device
         if (ns_fd < 0) {
             // No more namespaces
             break;
