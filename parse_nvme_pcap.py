@@ -254,10 +254,13 @@ def analyze_pcap(filename):
     # Parse PDUs properly in the stream
     if not unique_commands:
         print("\nNo XCOPY commands found in individual packets. Parsing TCP streams for PDUs...")
+        print(f"Found {len(tcp_streams)} TCP streams")
         for stream_key, stream_data in tcp_streams.items():
             # Reassemble stream
             stream_payload = b''.join(stream_data)
+            print(f"  Stream {stream_key}: {len(stream_payload)} bytes total")
             offset = 0
+            pdu_count = 0
             
             while offset < len(stream_payload) - 8:
                 # Try to parse PDU
@@ -266,6 +269,10 @@ def analyze_pcap(filename):
                     # Not a valid PDU, try next byte
                     offset += 1
                     continue
+                
+                pdu_count += 1
+                if pdu_count <= 5:  # Debug first few PDUs
+                    print(f"    PDU {pdu_count} at offset {offset}: type=0x{pdu['pdu_type']:02x}, length={pdu['pdu_length']}")
                 
                 # For PDU type 4 (I/O command), parse the I/O command structure
                 if pdu['pdu_type'] == 0x04:  # I/O command
@@ -309,23 +316,29 @@ def analyze_pcap(filename):
                     break
                 offset = next_offset
             
-            # Also do a simple search for 0x19 as fallback
+            print(f"    Parsed {pdu_count} PDUs in stream")
+            
+            # Also do a simple search for 0x19 as fallback (search entire stream)
+            print(f"    Searching for 0x19 opcode in stream...")
+            found_0x19_count = 0
             for i in range(len(stream_payload) - 64):
                 if stream_payload[i] == 0x19:
+                    found_0x19_count += 1
                     # Check if this looks like a valid NVMe command start
                     # (opcode 0x19, followed by reasonable values)
                     if i + 64 <= len(stream_payload):
                         cmd = parse_nvme_command(stream_payload[i:])
-                        if cmd and cmd['opcode'] == 0x19 and cmd['nsid'] > 0:
+                        if cmd and cmd['opcode'] == 0x19:
+                            print(f"    Found 0x19 at offset {i}, NSID={cmd['nsid']}, CDW10=0x{cmd['cdw10']:08x}")
                             # Check if we already found this one
                             found = False
                             for existing in unique_commands:
-                                if existing['command']['nsid'] == cmd['nsid'] and \
+                                if 'command' in existing and existing['command']['nsid'] == cmd['nsid'] and \
                                    existing['command']['cdw10'] == cmd['cdw10']:
                                     found = True
                                     break
                             if not found:
-                                print(f"\nFound XCOPY command at offset {i} (direct search)")
+                                print(f"      Adding XCOPY command at offset {i}")
                                 range_data = stream_payload[i+64:i+64+32] if len(stream_payload) >= i+64+32 else b''
                                 unique_commands.append({
                                     'command': cmd,
@@ -333,6 +346,8 @@ def analyze_pcap(filename):
                                     'stream': stream_key,
                                     'offset': i
                                 })
+            if found_0x19_count > 0:
+                print(f"    Found {found_0x19_count} occurrences of 0x19 in stream")
     
     # If still no commands found, show some debug info
     if not unique_commands and data_packets:
