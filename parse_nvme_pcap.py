@@ -274,8 +274,42 @@ def analyze_pcap(filename):
                 if pdu_count <= 5:  # Debug first few PDUs
                     print(f"    PDU {pdu_count} at offset {offset}: type=0x{pdu['pdu_type']:02x}, length={pdu['pdu_length']}")
                 
-                # For PDU type 4 (I/O command), parse the I/O command structure
-                if pdu['pdu_type'] == 0x04:  # I/O command
+                # For PDU type 0x00 (NVMe command) and 0x04 (I/O command)
+                if pdu['pdu_type'] == 0x00:  # NVMe command PDU
+                    # NVMe command PDU structure:
+                    # - 8 bytes: PDU header (already parsed)
+                    # - 64 bytes: NVMe command
+                    # - N bytes: Data (range descriptors for XCOPY)
+                    
+                    nvme_cmd_offset = offset + 8
+                    
+                    if nvme_cmd_offset + 64 <= len(stream_payload):
+                        cmd = parse_nvme_command(stream_payload[nvme_cmd_offset:])
+                        if cmd and cmd['opcode'] == 0x19:  # XCOPY
+                            print(f"\nFound XCOPY command in PDU type 0x00 at offset {offset} in stream {stream_key}")
+                            print(f"  PDU type: 0x{pdu['pdu_type']:02x}, length: {pdu['pdu_length']}")
+                            print(f"  NVMe command at offset: {nvme_cmd_offset}")
+                            print(f"  NSID: {cmd['nsid']}, CDW10: 0x{cmd['cdw10']:08x}")
+                            
+                            # Get range descriptor data (after NVMe command)
+                            data_offset = nvme_cmd_offset + 64
+                            range_data = stream_payload[data_offset:data_offset+32] if len(stream_payload) >= data_offset+32 else b''
+                            
+                            if len(range_data) >= 32:
+                                range_desc = parse_xcopy_range_descriptor(range_data)
+                                if range_desc:
+                                    print(f"  Range: src_nsid={range_desc['src_nsid']}, src_lba={range_desc['src_lba']}, dst_lba={range_desc['dst_lba']}, num_blocks={range_desc['num_blocks']}")
+                                    print(f"  Range hex: {range_desc['raw'].hex()}")
+                            
+                            unique_commands.append({
+                                'command': cmd,
+                                'data': range_data,
+                                'stream': stream_key,
+                                'offset': offset,
+                                'pdu': pdu
+                            })
+                
+                elif pdu['pdu_type'] == 0x04:  # I/O command
                     # I/O command PDU structure:
                     # - 8 bytes: PDU header (already parsed)
                     # - 8 bytes: I/O command capsule header
@@ -288,8 +322,9 @@ def analyze_pcap(filename):
                     if nvme_cmd_offset + 64 <= len(stream_payload):
                         cmd = parse_nvme_command(stream_payload[nvme_cmd_offset:])
                         if cmd and cmd['opcode'] == 0x19:  # XCOPY
-                            print(f"\nFound XCOPY command in PDU at offset {offset} in stream {stream_key}")
+                            print(f"\nFound XCOPY command in PDU type 0x04 at offset {offset} in stream {stream_key}")
                             print(f"  PDU type: 0x{pdu['pdu_type']:02x}, length: {pdu['pdu_length']}")
+                            print(f"  NVMe command at offset: {nvme_cmd_offset}")
                             print(f"  NSID: {cmd['nsid']}, CDW10: 0x{cmd['cdw10']:08x}")
                             
                             # Get range descriptor data (after NVMe command)
@@ -328,24 +363,32 @@ def analyze_pcap(filename):
                     # (opcode 0x19, followed by reasonable values)
                     if i + 64 <= len(stream_payload):
                         cmd = parse_nvme_command(stream_payload[i:])
-                        if cmd and cmd['opcode'] == 0x19:
-                            print(f"    Found 0x19 at offset {i}, NSID={cmd['nsid']}, CDW10=0x{cmd['cdw10']:08x}")
-                            # Check if we already found this one
-                            found = False
-                            for existing in unique_commands:
-                                if 'command' in existing and existing['command']['nsid'] == cmd['nsid'] and \
-                                   existing['command']['cdw10'] == cmd['cdw10']:
-                                    found = True
-                                    break
-                            if not found:
-                                print(f"      Adding XCOPY command at offset {i}")
-                                range_data = stream_payload[i+64:i+64+32] if len(stream_payload) >= i+64+32 else b''
-                                unique_commands.append({
-                                    'command': cmd,
-                                    'data': range_data,
-                                    'stream': stream_key,
-                                    'offset': i
-                                })
+                    if cmd and cmd['opcode'] == 0x19:
+                        print(f"    Found 0x19 at offset {i}, NSID={cmd['nsid']}, CDW10=0x{cmd['cdw10']:08x}")
+                        # Show context to understand why NSID might be 0
+                        if cmd['nsid'] == 0:
+                            print(f"      WARNING: NSID is 0! Command hex: {cmd['raw'].hex()}")
+                            print(f"      Context (offset {i-8} to {i+80}): {stream_payload[max(0,i-8):min(len(stream_payload),i+80)].hex()}")
+                        # Check if we already found this one
+                        found = False
+                        for existing in unique_commands:
+                            if 'command' in existing and existing['command']['nsid'] == cmd['nsid'] and \
+                               existing['command']['cdw10'] == cmd['cdw10']:
+                                found = True
+                                break
+                        if not found:
+                            print(f"      Adding XCOPY command at offset {i}")
+                            range_data = stream_payload[i+64:i+64+32] if len(stream_payload) >= i+64+32 else b''
+                            if len(range_data) >= 32:
+                                range_desc = parse_xcopy_range_descriptor(range_data)
+                                if range_desc:
+                                    print(f"      Range: src_nsid={range_desc['src_nsid']}, src_lba={range_desc['src_lba']}, dst_lba={range_desc['dst_lba']}, num_blocks={range_desc['num_blocks']}")
+                            unique_commands.append({
+                                'command': cmd,
+                                'data': range_data,
+                                'stream': stream_key,
+                                'offset': i
+                            })
             if found_0x19_count > 0:
                 print(f"    Found {found_0x19_count} occurrences of 0x19 in stream")
     
