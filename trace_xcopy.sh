@@ -28,7 +28,7 @@ echo "Command: sudo ./xcopy_tool --src-device $DEVICE --dst-device $DEVICE --src
 echo ""
 
 echo "--- xcopy_tool ioctl trace (all ioctl calls) ---"
-sudo strace -f -e trace=ioctl -s 200 -o /tmp/xcopy_strace.log ./xcopy_tool --src-device "$DEVICE" --dst-device "$DEVICE" --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1 2>&1 | tail -20
+sudo strace -f -e trace=ioctl -s 200 -o /tmp/xcopy_strace.log ./xcopy_tool --src-device "$DEVICE" --dst-device "$DEVICE" --src-lba $SRC_LBA --dst-lba $DST_LBA --range-size $BLOCKS --num-ranges 1 --count 1 --threads 1 --queue-depth 1 -v 2>&1 | grep -E "DEBUG:|ERROR:|Range descriptor|Hex dump" | head -30
 echo ""
 echo "--- Full strace ioctl output (all threads) ---"
 grep "ioctl" /tmp/xcopy_strace.log | head -30
