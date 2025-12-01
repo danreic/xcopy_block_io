@@ -159,8 +159,14 @@ int nvme_wrapper_connect_device(struct nvme_context *ctx,
         return -1;
     }
     
-    // Use libnvme's nvme_open() helper (returns fd, not handle)
-    ctx->ctrl_fd = nvme_open(ctrl_path);
+    // Check if controller device exists
+    if (access(ctrl_path, F_OK) != 0) {
+        fprintf(stderr, "Error: Controller device %s does not exist\n", ctrl_path);
+        return -1;
+    }
+    
+    // Use regular open() for controller device (nvme_open() may require namespace device)
+    ctx->ctrl_fd = open(ctrl_path, O_RDWR);
     if (ctx->ctrl_fd < 0) {
         fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
                 ctrl_path, strerror(errno));
@@ -269,8 +275,14 @@ int nvme_wrapper_connect(struct nvme_context *ctx,
         ctrl_path[sizeof(ctrl_path) - 1] = '\0';
     }
     
-    // Use libnvme's nvme_open() helper (returns fd, not handle)
-    ctx->ctrl_fd = nvme_open(ctrl_path);
+    // Check if controller device exists
+    if (access(ctrl_path, F_OK) != 0) {
+        fprintf(stderr, "Error: Controller device %s does not exist\n", ctrl_path);
+        return -1;
+    }
+    
+    // Use regular open() for controller device (nvme_open() may require namespace device)
+    ctx->ctrl_fd = open(ctrl_path, O_RDWR);
     if (ctx->ctrl_fd < 0) {
         fprintf(stderr, "Error: Failed to open NVMe controller at %s: %s\n", 
                 ctrl_path, strerror(errno));
