@@ -554,17 +554,25 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // For NVME_IOCTL_IO_CMD, the kernel expects the command structure to be properly formatted
     // Make sure all fields are set correctly before the ioctl call
     int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
-    if (ioctl_debug_count <= 3) {
-        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d, expected 0 for success or -1 for error)\n", ret, errno);
-        if (ret != 0 && ret != -1) {
-            fprintf(stderr, "WARNING: ioctl returned unexpected value %d (not 0 or -1)\n", ret);
-        }
-    }
     
     // Copy back data if we allocated an aligned buffer
     if (data_copied && data && data_len > 0) {
         memcpy(data, aligned_data, data_len);
         free(aligned_data);
+    }
+    
+    // Always check the result field - this is the actual command status
+    __u32 result = ioctl_cmd.result;
+    __u16 status = (result >> 1) & 0x7FFF;
+    __u8 status_type = (status >> 9) & 0x7;
+    __u16 status_code = status & 0xFF;
+    
+    // Log ioctl return and command result (first few times or if unusual)
+    static int result_log_count = 0;
+    if (result_log_count < 10 || ret != 0 || status != 0) {
+        fprintf(stderr, "DEBUG: ioctl returned %d (errno=%d), command result=0x%x, status=0x%x (type=%u, code=0x%x)\n",
+                ret, errno, result, status, status_type, status_code);
+        result_log_count++;
     }
     
     if (ret < 0) {
@@ -578,31 +586,25 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         return -errno;
     }
     
-    // For NVME_IOCTL_IO_CMD, a return value of 0 means success
-    // The actual command result is in ioctl_cmd.result
-    // Check result - result contains status field
+    // For NVME_IOCTL_IO_CMD, a return value >= 0 means the ioctl call succeeded
+    // But we must check ioctl_cmd.result for the actual NVMe command status
     // Status code is in bits 15:1, phase bit is bit 0
-    __u32 result = ioctl_cmd.result;
-    __u16 status = (result >> 1) & 0x7FFF;
-    __u8 status_type = (status >> 9) & 0x7;
-    __u16 status_code = status & 0xFF;
-    
     if (status != 0) {
         // Log status for debugging
         static int status_log_count = 0;
-        if (status_log_count < 5) {
-            fprintf(stderr, "NVMe command returned non-zero status: 0x%x (result=0x%x, type=%u, code=0x%x)\n",
-                    status, result, status_type, status_code);
+        if (status_log_count < 10) {
+            fprintf(stderr, "ERROR: NVMe command returned non-zero status: 0x%x (result=0x%x, type=%u, code=0x%x, opcode=0x%x, nsid=%u)\n",
+                    status, result, status_type, status_code, cmd->opcode, nsid);
             status_log_count++;
         }
         return -(int)status;
     }
     
-    // Debug: Log successful completion with detailed status
+    // Command succeeded (status == 0)
     static int success_logged = 0;
     if (!success_logged) {
-        fprintf(stderr, "DEBUG: NVMe command completed successfully (result=0x%x, status=0x%x, status_type=%u, status_code=0x%x)\n",
-                result, status, status_type, status_code);
+        fprintf(stderr, "DEBUG: NVMe command completed successfully (ioctl_ret=%d, result=0x%x, status=0x%x)\n",
+                ret, result, status);
         fprintf(stderr, "DEBUG: Command was accepted by kernel/driver. Check server logs to verify if copy was executed.\n");
         success_logged = 1;
     }
