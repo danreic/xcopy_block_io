@@ -52,7 +52,9 @@ int xcopy_cmd_build(struct xcopy_operation *op,
     
     // Use libnvme's nvme_init_copy_range_f2() to build range descriptors (format 2)
     // This matches nvme-cli's approach for cross-namespace copy
-    nvme_init_copy_range_f2((struct nvme_copy_range_f2 *)op->ranges, 
+    // We need to use the correct structure type for format 2
+    struct nvme_copy_range_f2 *f2_ranges = (struct nvme_copy_range_f2 *)op->ranges;
+    nvme_init_copy_range_f2(f2_ranges, 
                             snsids, nlbs, slbas, sopts,
                             eilbrts_short, elbatms, elbats, num_ranges);
     
@@ -124,8 +126,8 @@ bool xcopy_cmd_validate_range(struct copy_range_descriptor *range,
 }
 
 size_t xcopy_cmd_get_data_size(uint32_t num_ranges) {
-    // Each range descriptor is 32 bytes
+    // Each range descriptor is 32 bytes (format 2: struct nvme_copy_range_f2)
     // The command data contains the range descriptors
-    return num_ranges * sizeof(struct copy_range_descriptor);
+    return num_ranges * sizeof(struct nvme_copy_range_f2);
 }
 

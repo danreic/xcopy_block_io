@@ -393,15 +393,15 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         cmd->data_len = data_len;
         
         // Debug: Print detailed information about data buffer (first time for XCOPY)
+        // Note: The buffer contains struct nvme_copy_range_f2, not struct copy_range_descriptor
         static int range_data_debug_logged = 0;
-        if (!range_data_debug_logged && data_len >= sizeof(struct copy_range_descriptor)) {
-            struct copy_range_descriptor *first_range = (struct copy_range_descriptor *)data;
-            uint32_t src_nsid_le = first_range->src_nsid;
-            uint64_t src_lba_le = first_range->src_lba;
-            uint32_t num_blocks_le = first_range->num_blocks;
-            uint64_t dst_lba_le = first_range->dst_lba;
-            fprintf(stderr, "DEBUG: Range descriptor in data buffer (little-endian): src_nsid=0x%x, src_lba=0x%lx, num_blocks=0x%x, dst_lba=0x%lx\n",
-                    le32toh(src_nsid_le), le64toh(src_lba_le), le32toh(num_blocks_le), le64toh(dst_lba_le));
+        if (!range_data_debug_logged && data_len >= sizeof(struct nvme_copy_range_f2)) {
+            struct nvme_copy_range_f2 *first_range = (struct nvme_copy_range_f2 *)data;
+            uint32_t src_nsid = le32toh(first_range->snsid);
+            uint64_t src_lba = le64toh(first_range->slba);
+            uint16_t num_blocks = le16toh(first_range->nlb);
+            fprintf(stderr, "DEBUG: Range descriptor in data buffer (format 2): src_nsid=0x%x (%u), src_lba=0x%lx (%lu), num_blocks=0x%x (%u)\n",
+                    src_nsid, src_nsid, src_lba, src_lba, num_blocks, num_blocks);
             
             // Hex dump of first 64 bytes
             fprintf(stderr, "DEBUG: Hex dump of buffer being sent (first 64 bytes):\n");
@@ -428,9 +428,10 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
         cmd->data_len = 0;
     }
     
-    // Use namespace FD if available, otherwise use controller FD
-    int ns_fd = nvme_wrapper_get_ns_fd(ctx, nsid);
-    int target_fd = (ns_fd >= 0) ? ns_fd : ctx->ctrl_fd;
+    // For XCOPY commands, use controller FD (not namespace FD)
+    // XCOPY is an I/O command but needs to be submitted via controller
+    // The namespace ID is specified in the command structure itself
+    int target_fd = ctx->ctrl_fd;
     
     // Use libnvme's nvme_submit_io_passthru() (takes fd, not handle)
     // This handles all the low-level details including proper command formatting
