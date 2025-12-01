@@ -443,6 +443,14 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Prepare ioctl structure
     struct nvme_passthru_cmd ioctl_cmd = *cmd;
     
+    // Ensure command_id is set (some drivers may require this)
+    // Command ID is typically in bytes 2-3 of the NVMe command structure
+    // For libnvme, this might be in a different field or auto-generated
+    // But let's make sure we're not leaving it uninitialized
+    static uint16_t command_id_counter = 1;
+    // Note: libnvme's nvme_passthru_cmd might not have a direct command_id field
+    // The kernel will assign one, but we should ensure the structure is properly initialized
+    
     // Set data pointer if provided
     // For NVMe-TCP, buffers must be page-aligned for DMA operations
     void *aligned_data = NULL;
@@ -559,6 +567,32 @@ int nvme_wrapper_submit_passthru(struct nvme_context *ctx,
     // Try namespace FD first (like nvme-cli), fall back to controller FD
     // For NVME_IOCTL_IO_CMD, the kernel expects the command structure to be properly formatted
     // Make sure all fields are set correctly before the ioctl call
+    
+    // Debug: Print final ioctl_cmd structure before ioctl call (for comparison with nvme-cli)
+    static int final_cmd_logged = 0;
+    if (!final_cmd_logged && cmd->opcode == NVME_OPC_COPY) {
+        fprintf(stderr, "DEBUG: Final ioctl_cmd structure before ioctl (for comparison with nvme-cli):\n");
+        fprintf(stderr, "  opcode=0x%02x, flags=0x%02x, rsvd1=0x%04x, nsid=%u\n",
+                ioctl_cmd.opcode, ioctl_cmd.flags, ioctl_cmd.rsvd1, ioctl_cmd.nsid);
+        fprintf(stderr, "  cdw2=0x%08x, cdw3=0x%08x, cdw10=0x%08x, cdw11=0x%08x, cdw12=0x%08x, cdw13=0x%08x, cdw14=0x%08x, cdw15=0x%08x\n",
+                ioctl_cmd.cdw2, ioctl_cmd.cdw3, ioctl_cmd.cdw10, ioctl_cmd.cdw11,
+                ioctl_cmd.cdw12, ioctl_cmd.cdw13, ioctl_cmd.cdw14, ioctl_cmd.cdw15);
+        fprintf(stderr, "  metadata=0x%016llx, addr=0x%016llx, metadata_len=%u, data_len=%u, timeout_ms=%u\n",
+                (unsigned long long)ioctl_cmd.metadata, (unsigned long long)ioctl_cmd.addr,
+                ioctl_cmd.metadata_len, ioctl_cmd.data_len, ioctl_cmd.timeout_ms);
+        fprintf(stderr, "  result=0x%08x\n", ioctl_cmd.result);
+        fprintf(stderr, "  Full structure hex (first 128 bytes):\n");
+        uint8_t *cmd_bytes = (uint8_t *)&ioctl_cmd;
+        for (int i = 0; i < 128 && i < (int)sizeof(ioctl_cmd); i += 16) {
+            fprintf(stderr, "    %04x: ", i);
+            for (int j = 0; j < 16 && (i + j) < (int)sizeof(ioctl_cmd); j++) {
+                fprintf(stderr, "%02x ", cmd_bytes[i + j]);
+            }
+            fprintf(stderr, "\n");
+        }
+        final_cmd_logged = 1;
+    }
+    
     int ret = ioctl(target_fd, NVME_IOCTL_IO_CMD, &ioctl_cmd);
     
     // Copy back data if we allocated an aligned buffer
