@@ -18,9 +18,12 @@ INCLUDES = -I$(SPDK_INCLUDE) -Iinclude -I/usr/include
 LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/lib64
 
 # SPDK libraries (link statically for better performance)
-SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log -lspdk_util \
-            -lspdk_thread -lspdk_trace -lspdk_json -lspdk_event \
-            -lspdk_keyring -lspdk_keyring_linux \
+# Use --start-group/--end-group to handle circular dependencies
+# Order: libraries that need symbols come first, providers come later
+SPDK_LIBS = -Wl,--start-group \
+            -lspdk_nvme -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
+            -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
+            -Wl,--end-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
             -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter
