@@ -2,6 +2,7 @@
 #include <cstring>
 #include <iostream>
 #include <cstdio>
+#include <cstdlib>
 
 namespace xload {
 
@@ -82,8 +83,9 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     }
     strncpy(trid_.trsvcid, trsvcid.c_str(), sizeof(trid_.trsvcid) - 1);
     
-    if (!hostnqn.empty() && hostnqn.length() < sizeof(trid_.hostnqn)) {
-        strncpy(trid_.hostnqn, hostnqn.c_str(), sizeof(trid_.hostnqn) - 1);
+    // Set hostnqn via environment variable (SPDK uses this)
+    if (!hostnqn.empty()) {
+        setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
     }
     
     if (!subnqn.empty() && subnqn.length() < sizeof(trid_.subnqn)) {
@@ -158,13 +160,12 @@ bool SpdkContext::supports_cross_namespace_copy() const {
     }
     
     // Check if controller supports Simple Copy Command (SCC)
-    const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr_);
-    
     // Check for TP4130 support (cross-namespace copy)
     // This is indicated by the SCCS (Simple Copy Command Support) bit
     // and the ability to specify different source NSIDs in copy range descriptors
     // For now, we'll assume support if SCC is available
     // A more thorough check would examine the Identify Controller data structure
+    // const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr_);
     
     return true; // Simplified - should check actual controller capabilities
 }
