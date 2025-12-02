@@ -8,7 +8,8 @@ LDFLAGS = -lpthread -lnuma -ldl
 # SPDK paths (adjust these based on your SPDK installation)
 SPDK_ROOT ?= /usr/local/spdk
 SPDK_INCLUDE = $(SPDK_ROOT)/include
-SPDK_LIB = $(SPDK_ROOT)/lib
+# Auto-detect: use build/lib if it exists (for non-installed builds), otherwise use lib (for installed)
+SPDK_LIB = $(shell if [ -d "$(SPDK_ROOT)/build/lib" ]; then echo "$(SPDK_ROOT)/build/lib"; else echo "$(SPDK_ROOT)/lib"; fi)
 
 # Include paths
 INCLUDES = -I$(SPDK_INCLUDE) -Iinclude -I/usr/include
@@ -52,7 +53,8 @@ all: $(TARGET)
 check-libs:
 	@echo "Checking required libraries:"
 	@test -d $(SPDK_ROOT) && echo "  ✓ SPDK found at $(SPDK_ROOT)" || echo "  ✗ SPDK NOT found at $(SPDK_ROOT) (set SPDK_ROOT)"
-	@test -f $(SPDK_LIB)/libspdk_nvme.a && echo "  ✓ SPDK NVMe library found" || echo "  ✗ SPDK NVMe library NOT found"
+	@echo "  Using SPDK_LIB: $(SPDK_LIB)"
+	@test -f $(SPDK_LIB)/libspdk_nvme.a && echo "  ✓ SPDK NVMe library found at $(SPDK_LIB)/libspdk_nvme.a" || echo "  ✗ SPDK NVMe library NOT found at $(SPDK_LIB)/libspdk_nvme.a"
 	@echo ""
 	@echo "Checking hugepages:"
 	@grep -q Hugepages /proc/meminfo && grep Hugepages /proc/meminfo | head -2 || echo "  ✗ Hugepages not configured"
