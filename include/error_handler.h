@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <atomic>
 #include <unordered_map>
+#include <mutex>
 
 namespace xload {
 

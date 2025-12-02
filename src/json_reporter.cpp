@@ -70,7 +70,7 @@ void JsonReporter::generate_report(const Statistics& stats,
 }
 
 void JsonReporter::generate_human_report(const Statistics& stats,
-                                        const Config& config,
+                                        const Config& /* config */,
                                         double elapsed_sec,
                                         std::ostream& out) {
     Statistics snapshot;
