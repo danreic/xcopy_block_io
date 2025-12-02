@@ -1,36 +1,49 @@
-# Makefile for NVMe XCOPY I/O Tool
-# Uses libnvme (Linux kernel NVMe library) instead of SPDK
+# Makefile for X-LOAD (XCOPY High-Concurrency Load Generator)
+# Uses SPDK for kernel bypass and poll-mode operation
 
-CC = gcc
-CFLAGS = -Wall -Wextra -O2 -g -std=c11 -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L
-LDFLAGS = -lpthread -lnuma
+CXX = g++
+CXXFLAGS = -Wall -Wextra -O2 -g -std=c++17 -march=native
+LDFLAGS = -lpthread -lnuma -ldl
+
+# SPDK paths (adjust these based on your SPDK installation)
+SPDK_ROOT ?= /usr/local/spdk
+SPDK_INCLUDE = $(SPDK_ROOT)/include
+SPDK_LIB = $(SPDK_ROOT)/lib
 
 # Include paths
-INCLUDES = -I/usr/include -Iinclude
+INCLUDES = -I$(SPDK_INCLUDE) -Iinclude -I/usr/include
 
 # Library paths
-LIBPATHS = -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/lib64
+LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/lib64
 
-# Libraries: libnvme and liburing
-# libnvme: Linux kernel's user-space NVMe library
-# liburing: For async I/O operations
-LIBS = -lnvme -luring -lpthread -lnuma -ldl
+# SPDK libraries (link statically for better performance)
+SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log -lspdk_util \
+            -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
+            -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
+            -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter
 
-# Source files
+# JSON library (nlohmann/json header-only, or use pkg-config if installed)
+JSON_INCLUDE = -I/usr/include/nlohmann
+
+# All libraries
+LIBS = $(SPDK_LIBS) -lpthread -lnuma -ldl -lrt -lm -ljson
+
+# Source files (C++ implementation)
 SRCDIR = src
 INCDIR = include
-SOURCES = $(SRCDIR)/main.c \
-          $(SRCDIR)/nvme_wrapper.c \
-          $(SRCDIR)/io_uring_wrapper.c \
-          $(SRCDIR)/xcopy_cmd.c \
-          $(SRCDIR)/range_manager.c \
-          $(SRCDIR)/volume_manager.c \
-          $(SRCDIR)/concurrency_manager.c \
-          $(SRCDIR)/statistics.c \
-          $(SRCDIR)/device_parser.c
+SOURCES = $(SRCDIR)/main.cpp \
+          $(SRCDIR)/spdk_context.cpp \
+          $(SRCDIR)/poll_thread_manager.cpp \
+          $(SRCDIR)/xcopy_generator.cpp \
+          $(SRCDIR)/statistics.cpp \
+          $(SRCDIR)/high_res_timer.cpp \
+          $(SRCDIR)/json_reporter.cpp \
+          $(SRCDIR)/error_handler.cpp \
+          $(SRCDIR)/lba_manager.cpp \
+          $(SRCDIR)/config_manager.cpp
 
-OBJECTS = $(SOURCES:.c=.o)
-TARGET = xcopy_tool
+OBJECTS = $(SOURCES:.cpp=.o)
+TARGET = x-load
 
 # Default target
 all: $(TARGET)
@@ -38,23 +51,23 @@ all: $(TARGET)
 # Check which libraries exist (for debugging)
 check-libs:
 	@echo "Checking required libraries:"
-	@pkg-config --exists libnvme && echo "  ✓ libnvme found" || echo "  ✗ libnvme NOT found (install: apt-get install libnvme-dev)"
-	@pkg-config --exists liburing && echo "  ✓ liburing found" || echo "  ✗ liburing NOT found (install: apt-get install liburing-dev)"
+	@test -d $(SPDK_ROOT) && echo "  ✓ SPDK found at $(SPDK_ROOT)" || echo "  ✗ SPDK NOT found at $(SPDK_ROOT) (set SPDK_ROOT)"
+	@test -f $(SPDK_LIB)/libspdk_nvme.a && echo "  ✓ SPDK NVMe library found" || echo "  ✗ SPDK NVMe library NOT found"
 	@echo ""
-	@echo "Checking kernel NVMe-TCP support:"
-	@lsmod | grep -q nvme_tcp && echo "  ✓ nvme_tcp kernel module loaded" || echo "  ✗ nvme_tcp kernel module not loaded (run: modprobe nvme-tcp)"
+	@echo "Checking hugepages:"
+	@grep -q Hugepages /proc/meminfo && grep Hugepages /proc/meminfo | head -2 || echo "  ✗ Hugepages not configured"
 
 # Build the main executable
-# Add rpath so the binary can find libraries at runtime
+# Link with SPDK libraries (static linking preferred)
 $(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
 		-Wl,--as-needed \
-		-Wl,-rpath,/usr/lib:/usr/lib64:/usr/local/lib:/usr/local/lib64 \
+		-Wl,-rpath,$(SPDK_LIB):/usr/lib:/usr/lib64:/usr/local/lib:/usr/local/lib64 \
 		-Wl,--disable-new-dtags
 
-# Compile source files
-%.o: %.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+# Compile C++ source files
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(JSON_INCLUDE) -c $< -o $@
 
 # Clean build artifacts
 clean:
@@ -71,14 +84,19 @@ uninstall:
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  all       - Build the xcopy_tool executable (default)"
+	@echo "  all       - Build the x-load executable (default)"
 	@echo "  clean     - Remove build artifacts"
 	@echo "  install   - Install to /usr/local/bin"
 	@echo "  uninstall - Remove from /usr/local/bin"
+	@echo "  check-libs - Check for required libraries and system configuration"
 	@echo ""
 	@echo "Dependencies:"
-	@echo "  libnvme - Linux kernel NVMe library (install: apt-get install libnvme-dev)"
-	@echo "  liburing - io_uring library (install: apt-get install liburing-dev)"
+	@echo "  SPDK - Storage Performance Development Kit (set SPDK_ROOT=/path/to/spdk)"
+	@echo "  nlohmann/json - JSON library (header-only, install: apt-get install nlohmann-json3-dev)"
+	@echo "  Hugepages - Must be configured (see README.md)"
+	@echo ""
+	@echo "Environment:"
+	@echo "  SPDK_ROOT - Path to SPDK installation (default: /usr/local/spdk)"
 
 .PHONY: all clean install uninstall help check-libs
 

@@ -1,0 +1,55 @@
+#ifndef CONFIG_MANAGER_H
+#define CONFIG_MANAGER_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <string>
+
+namespace xload {
+
+struct Config {
+    // Transport configuration
+    std::string traddr;          // Target IP address
+    std::string trsvcid;         // Service ID (port)
+    std::string hostnqn;         // Host NQN
+    std::string subnqn;          // Subsystem NQN (optional, for discovery)
+    
+    // Runtime configuration
+    uint64_t runtime_sec;        // Runtime duration in seconds (0 = infinite)
+    uint32_t iodepth;            // Maximum global I/O depth
+    uint32_t num_cores;          // Number of dedicated CPU cores
+    uint32_t max_ranges;         // Maximum source ranges per command (1-16)
+    
+    // Workload configuration
+    uint32_t dst_nsid;           // Destination namespace ID
+    std::vector<uint32_t> src_nsids;  // Source namespace IDs (for cross-namespace)
+    uint64_t dst_lba_start;      // Starting LBA for destination
+    uint64_t dst_lba_end;        // Ending LBA for destination (0 = use namespace size)
+    
+    // Output configuration
+    bool json_output;            // Output in JSON format
+    bool verbose;                // Verbose output
+    
+    // Default constructor
+    Config();
+    
+    // Validate configuration
+    bool validate() const;
+    
+    // Print configuration
+    void print() const;
+};
+
+class ConfigManager {
+public:
+    // Parse command line arguments
+    static int parse_args(int argc, char** argv, Config& config);
+    
+    // Print usage
+    static void print_usage(const char* prog_name);
+};
+
+} // namespace xload
+
+#endif // CONFIG_MANAGER_H
+
