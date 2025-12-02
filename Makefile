@@ -26,8 +26,8 @@ SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log -lspdk_util \
 # JSON library (nlohmann/json header-only, or use pkg-config if installed)
 JSON_INCLUDE = -I/usr/include/nlohmann
 
-# All libraries
-LIBS = $(SPDK_LIBS) -lpthread -lnuma -ldl -lrt -lm -ljson
+# All libraries (note: nlohmann/json is header-only, no linking needed)
+LIBS = $(SPDK_LIBS) -lpthread -lnuma -ldl -lrt -lm
 
 # Source files (C++ implementation)
 SRCDIR = src

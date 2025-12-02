@@ -17,8 +17,6 @@ LbaManager::LbaManager(uint64_t namespace_size, uint64_t start_lba, uint64_t end
 }
 
 uint64_t LbaManager::get_next_dst_lba(uint64_t range_size) {
-    uint64_t range_size_blocks = get_dst_range_size();
-    
     if (dst_current_ + range_size > dst_end_) {
         // Wrap around to start
         dst_current_ = dst_start_;
