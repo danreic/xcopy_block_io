@@ -19,7 +19,7 @@ LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/l
 
 # SPDK libraries (link statically for better performance)
 SPDK_LIBS = -lspdk_nvme -lspdk_env_dpdk -lspdk_log -lspdk_util \
-            -lspdk_thread -lspdk_key \
+            -lspdk_thread -lspdk_keyring -lspdk_keyring_linux \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
             -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter
