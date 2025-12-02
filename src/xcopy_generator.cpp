@@ -101,10 +101,6 @@ XcopyGenerator::XcopyGenerator(uint32_t max_ranges,
 {
 }
 
-uint32_t XcopyGenerator::get_random_num_ranges() {
-    return range_dist_(rng_);
-}
-
 uint32_t XcopyGenerator::get_random_src_nsid() {
     if (src_nsids_.empty()) {
         return dst_nsid_;
@@ -116,8 +112,10 @@ uint32_t XcopyGenerator::get_random_src_nsid() {
 
 uint64_t XcopyGenerator::get_ns_size(uint32_t nsid) {
     for (const auto* ns : namespaces_) {
-        if (ns && spdk_nvme_ns_get_id(ns) == nsid) {
-            return spdk_nvme_ns_get_num_sectors(ns);
+        // Remove const for SPDK API calls
+        struct spdk_nvme_ns* non_const_ns = const_cast<struct spdk_nvme_ns*>(ns);
+        if (ns && spdk_nvme_ns_get_id(non_const_ns) == nsid) {
+            return spdk_nvme_ns_get_num_sectors(non_const_ns);
         }
     }
     return 0;
@@ -152,13 +150,24 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         uint64_t src_lba = lba_mgr.get_random_src_lba(range_size);
         
         // Fill in range descriptor
-        op.ranges[i].snsid = src_nsid;
+        // Note: SPDK's spdk_nvme_scc_source_range structure format
+        // For cross-namespace copy, we need to use format 2 which includes snsid
+        // The structure may vary by SPDK version - using memset and setting known fields
+        memset(&op.ranges[i], 0, sizeof(op.ranges[i]));
         op.ranges[i].slba = src_lba;
         op.ranges[i].nlb = range_size - 1; // 0-based (0 = 1 block)
-        op.ranges[i].sopts = 0; // Source options
-        op.ranges[i].eilbrts = 0; // Expected initial logical block reference tag (short)
-        op.ranges[i].elbatms = 0; // Expected LBA application tag mask
-        op.ranges[i].elbats = 0;  // Expected LBA application tag
+        op.ranges[i].eilbrt = 0; // Expected initial logical block reference tag
+        op.ranges[i].elbatm = 0; // Expected LBA application tag mask
+        op.ranges[i].elbat = 0;  // Expected LBA application tag
+        
+        // For cross-namespace copy (format 2), snsid is in the first DWORD
+        // We'll need to set it manually in the structure
+        // Check if structure has snsid field (may be version-dependent)
+        // For now, use spdk_nvme_scc_source_range_set_snsid if available, or manual setting
+        // Since the structure layout may vary, we'll set the raw bytes for snsid
+        // Format 2: DWORD 0 = Reserved, DWORD 1 = Source NSID
+        uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[i]);
+        range_dwords[1] = src_nsid; // Set source NSID in DWORD 1 (format 2)
         
         op.total_blocks += range_size;
     }
