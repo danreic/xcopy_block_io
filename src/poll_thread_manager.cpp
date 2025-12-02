@@ -139,8 +139,7 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
         op.num_ranges,
         op.dst_lba,
         xcopy_complete_cb,
-        op_copy, // Callback will free this
-        0 // Copy flags
+        op_copy // Callback will free this
     );
     
     if (rc == 0) {
