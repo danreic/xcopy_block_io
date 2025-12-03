@@ -48,6 +48,12 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return 0;
     }
     
+    // Set hostnqn via environment variable BEFORE spdk_env_init()
+    // This ensures SPDK reads the correct Host NQN during initialization
+    if (!hostnqn.empty()) {
+        setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
+    }
+    
     // Initialize SPDK environment
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
@@ -84,11 +90,6 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     strncpy(trid_.trsvcid, trsvcid.c_str(), sizeof(trid_.trsvcid) - 1);
-    
-    // Set hostnqn via environment variable (SPDK uses this)
-    if (!hostnqn.empty()) {
-        setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
-    }
     
     if (!subnqn.empty() && subnqn.length() < sizeof(trid_.subnqn)) {
         strncpy(trid_.subnqn, subnqn.c_str(), sizeof(trid_.subnqn) - 1);
