@@ -226,22 +226,9 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     // This bypasses the thread library initialization issue completely
     ctx->spdk_thread = nullptr;  // No SPDK thread in workaround mode
     
-    // Create QPair directly (without SPDK thread context)
-    // Note: This may not work in all SPDK versions, but let's try
-    spdk_nvme_io_qpair_opts opts;
-    struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
-    if (!ctrlr) {
-        std::cerr << "No controller available for thread " << ctx->thread_id << std::endl;
-        return;
-    }
-    spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-    opts.qprio = SPDK_NVME_QPRIO_URGENT;
-    opts.io_queue_size = ctx->target_iodepth;
-    
-    ctx->qpair = ctx->spdk_ctx->create_qpair(ctx->target_iodepth, &opts);
-    
+    // QPair should already be created in start() function (serialized creation)
     if (!ctx->qpair) {
-        std::cerr << "Failed to create QPair for thread " << ctx->thread_id << std::endl;
+        std::cerr << "Error: QPair not created for thread " << ctx->thread_id << std::endl;
         return;
     }
     
@@ -298,9 +285,8 @@ int PollThreadManager::start() {
     // by having each pthread create its own SPDK thread
     // This is not ideal but should work
     
-    // Create pthreads - each will create its own SPDK thread
-    // This avoids the chicken-and-egg problem of needing a thread context
-    // to create threads
+    // WORKAROUND: Create QPairs serially from main thread before spawning worker threads
+    // This avoids connection failures when multiple threads try to create QPairs simultaneously
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -311,12 +297,36 @@ int PollThreadManager::start() {
         ctx->range_size = range_size_;
         ctx->stats = stats_;
         ctx->should_stop = false;
-        ctx->spdk_thread = nullptr; // Will be created in thread_func
+        ctx->spdk_thread = nullptr; // No SPDK thread in workaround mode
         
-        // Create pthread - it will create its own SPDK thread
+        // Create QPair serially from main thread (before creating pthread)
+        // This avoids race conditions and connection failures
+        spdk_nvme_io_qpair_opts opts;
+        struct spdk_nvme_ctrlr* ctrlr = spdk_ctx_->get_ctrlr();
+        if (!ctrlr) {
+            std::cerr << "No controller available for thread " << i << std::endl;
+            continue; // Skip this thread
+        }
+        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+        opts.qprio = SPDK_NVME_QPRIO_URGENT;
+        opts.io_queue_size = ctx->target_iodepth;
+        
+        ctx->qpair = spdk_ctx_->create_qpair(ctx->target_iodepth, &opts);
+        if (!ctx->qpair) {
+            std::cerr << "Warning: Failed to create QPair for thread " << i << std::endl;
+            std::cerr << "         This thread will be skipped" << std::endl;
+            continue; // Skip this thread if QPair creation fails
+        }
+        
+        // Create pthread - QPair is already created
         ctx->pthread = new std::thread(thread_func, ctx.get());
         
         threads_.push_back(std::move(ctx));
+    }
+    
+    if (threads_.empty()) {
+        std::cerr << "Error: Failed to create any QPairs" << std::endl;
+        return -1;
     }
     
     running_ = true;
