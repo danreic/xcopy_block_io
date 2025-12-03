@@ -85,10 +85,15 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
-    // Note: We don't call spdk_thread_lib_init() explicitly here.
-    // SPDK threads can be created after spdk_env_init() without explicit
-    // thread library initialization. The thread library will be initialized
-    // automatically when the first thread is created.
+    // Initialize SPDK thread library
+    // This is required before creating any SPDK threads
+    // Use default mempool size (0 = use SPDK default, which is 262143)
+    if (spdk_thread_lib_init_ext(nullptr, nullptr, 0, 0) != 0) {
+        std::cerr << "Failed to initialize SPDK thread library" << std::endl;
+        std::cerr << "Note: This may be due to insufficient hugepages or memory" << std::endl;
+        std::cerr << "      Check hugepages: grep Hugepages /proc/meminfo" << std::endl;
+        return -1;
+    }
     
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
