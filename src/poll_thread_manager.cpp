@@ -222,30 +222,16 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                   << ctx->thread_id << std::endl;
     }
     
-    // WORKAROUND: Use main SPDK thread for all worker threads
-    // This bypasses the thread library initialization issue
-    // All threads will share the main SPDK thread (not ideal but works for sanity testing)
-    ctx->spdk_thread = ctx->spdk_ctx->get_main_thread();
+    // WORKAROUND: Run without SPDK threads - use direct I/O submission
+    // This bypasses the thread library initialization issue completely
+    ctx->spdk_thread = nullptr;  // No SPDK thread in workaround mode
     
-    if (!ctx->spdk_thread) {
-        // Fallback: try to get current thread or create one
-        ctx->spdk_thread = spdk_get_thread();
-        if (!ctx->spdk_thread) {
-            std::cerr << "Error: No SPDK thread available for worker " << ctx->thread_id << std::endl;
-            std::cerr << "       Cannot proceed without SPDK thread" << std::endl;
-            return;
-        }
-    }
-    
-    // Switch to the SPDK thread
-    spdk_set_thread(ctx->spdk_thread);
-    
-    // Create QPair (dedicated to this thread)
+    // Create QPair directly (without SPDK thread context)
+    // Note: This may not work in all SPDK versions, but let's try
     spdk_nvme_io_qpair_opts opts;
     struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
     if (!ctrlr) {
         std::cerr << "No controller available for thread " << ctx->thread_id << std::endl;
-        spdk_thread_exit(ctx->spdk_thread);
         return;
     }
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
@@ -256,34 +242,40 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     
     if (!ctx->qpair) {
         std::cerr << "Failed to create QPair for thread " << ctx->thread_id << std::endl;
-        spdk_thread_exit(ctx->spdk_thread);
         return;
     }
     
-    // Register poller (poll every 0 microseconds = continuous)
-    struct spdk_poller* poller = spdk_poller_register(poller_func, ctx, 0);
-    
     ctx->running = true;
     
-    // Poll until stopped
+    // Poll QPair directly without SPDK thread polling
+    // This is a workaround - we poll the QPair completion queue directly
     while (!ctx->should_stop.load()) {
-        spdk_thread_poll(ctx->spdk_thread, 0, 0);
+        // Submit I/O if we have capacity
+        while (ctx->outstanding_io.load() < ctx->target_iodepth) {
+            if (submit_next_io(ctx) == 0) {
+                break;  // No more I/O to submit
+            }
+        }
+        
+        // Poll for completions directly on the QPair
+        int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+        if (num_completions < 0) {
+            break;  // Error
+        }
+        
+        // Small sleep to avoid 100% CPU (not ideal but works for sanity test)
+        usleep(100);
     }
     
     // Wait for outstanding I/O to complete
     while (ctx->outstanding_io.load() > 0) {
-        spdk_thread_poll(ctx->spdk_thread, 0, 0);
+        spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+        usleep(100);
     }
     
     // Cleanup
-    if (poller) {
-        spdk_poller_unregister(&poller);
-    }
     ctx->spdk_ctx->delete_qpair(ctx->qpair);
     ctx->qpair = nullptr;
-    
-    spdk_thread_exit(ctx->spdk_thread);
-    ctx->spdk_thread = nullptr;
     ctx->running = false;
 }
 

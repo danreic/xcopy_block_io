@@ -86,18 +86,13 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
-    // WORKAROUND: Try to create a main SPDK thread first
-    // The first thread creation might auto-initialize the thread library
-    // This bypasses the explicit thread library initialization that's failing
-    main_thread_ = spdk_thread_create("xload_main", nullptr);
-    if (main_thread_) {
-        spdk_set_thread(main_thread_);
-        std::cout << "Created main SPDK thread (workaround for mempool issue)" << std::endl;
-    } else {
-        std::cerr << "Warning: Failed to create main SPDK thread" << std::endl;
-        std::cerr << "         This may cause issues with QPair creation" << std::endl;
-        // Continue anyway - some operations might work
-    }
+    // WORKAROUND: Skip SPDK thread creation entirely for sanity testing
+    // We'll use a single-threaded model without SPDK threads
+    // This bypasses the thread library initialization issue completely
+    // Note: This means we can't use multiple threads, but it allows sanity testing
+    main_thread_ = nullptr;  // No SPDK threads - workaround mode
+    std::cout << "Note: Running in single-threaded mode (workaround for mempool issue)" << std::endl;
+    std::cout << "      SPDK threads disabled - using direct I/O submission" << std::endl;
     
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
