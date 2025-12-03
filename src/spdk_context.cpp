@@ -85,13 +85,16 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
-    // Initialize SPDK thread library
-    // This is required before creating any SPDK threads
-    // Use default mempool size (0 = use SPDK default, which is 262143)
-    if (spdk_thread_lib_init_ext(nullptr, nullptr, 0, 0) != 0) {
+    // Initialize SPDK thread library using the simple init function
+    // This uses default parameters and should work if environment is properly initialized
+    if (spdk_thread_lib_init(nullptr, 0) != 0) {
         std::cerr << "Failed to initialize SPDK thread library" << std::endl;
+        std::cerr << "Error: spdk_thread_lib_init failed" << std::endl;
         std::cerr << "Note: This may be due to insufficient hugepages or memory" << std::endl;
         std::cerr << "      Check hugepages: grep Hugepages /proc/meminfo" << std::endl;
+        std::cerr << "      Hugepages available: ";
+        std::cerr.flush();
+        system("grep HugePages_Free /proc/meminfo 2>/dev/null || echo 'unknown'");
         return -1;
     }
     
