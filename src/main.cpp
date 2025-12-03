@@ -1,3 +1,8 @@
+#include <iostream>
+#include <csignal>
+#include <vector>
+#include <memory>
+#include <unistd.h>
 #include "config_manager.h"
 #include "spdk_context.h"
 #include "poll_thread_manager.h"
@@ -6,11 +11,6 @@
 #include "statistics.h"
 #include "json_reporter.h"
 #include "high_res_timer.h"
-#include <iostream>
-#include <csignal>
-#include <vector>
-#include <memory>
-#include <unistd.h>
 
 namespace xload {
 

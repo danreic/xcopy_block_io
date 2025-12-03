@@ -14,13 +14,13 @@ public:
     static void generate_report(const Statistics& stats, 
                                const Config& config,
                                double elapsed_sec,
-                               std::ostream& out);
+                               ::std::ostream& out);
     
     // Generate human-readable report
     static void generate_human_report(const Statistics& stats,
                                      const Config& config,
                                      double elapsed_sec,
-                                     std::ostream& out);
+                                     ::std::ostream& out);
 };
 
 } // namespace xload

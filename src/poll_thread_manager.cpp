@@ -9,7 +9,7 @@ namespace xload {
 
 // Static members for shared qpair management
 struct spdk_nvme_qpair* PollThreadManager::shared_qpair_ = nullptr;
-std::mutex PollThreadManager::qpair_mutex_;
+::std::mutex PollThreadManager::qpair_mutex_;
 uint32_t PollThreadManager::actual_qpair_depth_ = 0;
 
 PollThreadContext::PollThreadContext()
