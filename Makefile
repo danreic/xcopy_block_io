@@ -73,10 +73,16 @@ check-libs:
 
 # Create a temporary nvme library without CUSE (fuse) code
 NVME_LIB_TMP = /tmp/libspdk_nvme_no_cuse.a
-$(NVME_LIB_TMP): $(SPDK_LIB)/libspdk_nvme.a
-	@echo "Creating nvme library without CUSE..."
+NVME_LIB_SRC = $(shell if [ -f "$(SPDK_ROOT)/build/lib/libspdk_nvme.a" ]; then echo "$(SPDK_ROOT)/build/lib/libspdk_nvme.a"; elif [ -f "$(SPDK_ROOT)/lib/libspdk_nvme.a" ]; then echo "$(SPDK_ROOT)/lib/libspdk_nvme.a"; else echo ""; fi)
+
+$(NVME_LIB_TMP):
+	@if [ -z "$(NVME_LIB_SRC)" ] || [ ! -f "$(NVME_LIB_SRC)" ]; then \
+		echo "Error: Cannot find libspdk_nvme.a. Check SPDK_ROOT (currently: $(SPDK_ROOT))"; \
+		exit 1; \
+	fi
+	@echo "Creating nvme library without CUSE from $(NVME_LIB_SRC)..."
 	@mkdir -p /tmp/spdk_nvme_extract
-	@cd /tmp/spdk_nvme_extract && ar x $(SPDK_LIB)/libspdk_nvme.a
+	@cd /tmp/spdk_nvme_extract && ar x $(NVME_LIB_SRC)
 	@cd /tmp/spdk_nvme_extract && rm -f nvme_cuse.o 2>/dev/null || true
 	@ar rcs $(NVME_LIB_TMP) /tmp/spdk_nvme_extract/*.o
 	@rm -rf /tmp/spdk_nvme_extract
