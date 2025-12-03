@@ -20,15 +20,19 @@ LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/l
 # SPDK libraries (link statically for better performance)
 # Use --start-group/--end-group to handle circular dependencies
 # Use --whole-archive for nvme library to ensure TCP transport constructor runs
+# Note: We exclude CUSE (fuse) code as we don't need it
 # Order: libraries that need symbols come first, providers come later
 SPDK_LIBS = -Wl,--start-group \
-            -Wl,--whole-archive -lspdk_nvme -Wl,--no-whole-archive \
+            -Wl,--whole-archive -lspdk_nvme_no_cuse -Wl,--no-whole-archive \
+            -lspdk_sock -lspdk_sock_posix \
+            -lspdk_accel -lspdk_event_sock \
             -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
             -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
             -Wl,--end-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
-            -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter
+            -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter \
+            -lisal -Wl,--undefined=spdk_nvme_transport_register
 
 # JSON library (nlohmann/json header-only, or use pkg-config if installed)
 JSON_INCLUDE = -I/usr/include/nlohmann
@@ -67,10 +71,21 @@ check-libs:
 	@echo "Checking hugepages:"
 	@grep -q Hugepages /proc/meminfo && grep Hugepages /proc/meminfo | head -2 || echo "  ✗ Hugepages not configured"
 
+# Create a temporary nvme library without CUSE (fuse) code
+NVME_LIB_TMP = /tmp/libspdk_nvme_no_cuse.a
+$(NVME_LIB_TMP): $(SPDK_LIB)/libspdk_nvme.a
+	@echo "Creating nvme library without CUSE..."
+	@mkdir -p /tmp/spdk_nvme_extract
+	@cd /tmp/spdk_nvme_extract && ar x $(SPDK_LIB)/libspdk_nvme.a
+	@cd /tmp/spdk_nvme_extract && rm -f nvme_cuse.o 2>/dev/null || true
+	@ar rcs $(NVME_LIB_TMP) /tmp/spdk_nvme_extract/*.o
+	@rm -rf /tmp/spdk_nvme_extract
+	@echo "Created $(NVME_LIB_TMP)"
+
 # Build the main executable
 # Link with SPDK libraries (static linking preferred)
-$(TARGET): $(OBJECTS)
-	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
+$(TARGET): $(OBJECTS) $(NVME_LIB_TMP)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) -L/tmp $(LIBS) $(LDFLAGS) \
 		-Wl,--no-as-needed \
 		-Wl,-rpath,$(SPDK_LIB):/usr/lib:/usr/lib64:/usr/local/lib:/usr/local/lib64 \
 		-Wl,--disable-new-dtags
