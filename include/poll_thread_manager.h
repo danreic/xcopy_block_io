@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <thread>
+#include <mutex>
 #include "spdk_context.h"
 #include "xcopy_generator.h"
 #include "lba_manager.h"
@@ -97,7 +98,14 @@ private:
     
     // Handle backpressure
     static void handle_backpressure(PollThreadContext* ctx, const XcopyOperation& op);
-};
+    
+    // Reconnect qpair (called when disconnection is detected)
+    static struct spdk_nvme_qpair* reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth);
+    
+    // Shared qpair for all threads (protected by mutex)
+    static struct spdk_nvme_qpair* shared_qpair_;
+    static std::mutex qpair_mutex_;
+    static uint32_t actual_qpair_depth_;
 
 } // namespace xload
 

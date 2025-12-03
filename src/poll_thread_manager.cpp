@@ -7,6 +7,11 @@
 
 namespace xload {
 
+// Static members for shared qpair management
+struct spdk_nvme_qpair* PollThreadManager::shared_qpair_ = nullptr;
+std::mutex PollThreadManager::qpair_mutex_;
+uint32_t PollThreadManager::actual_qpair_depth_ = 0;
+
 PollThreadContext::PollThreadContext()
     : thread_id(0)
     , qpair(nullptr)
@@ -153,6 +158,14 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
 int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     // Check if we should stop
     if (ctx->should_stop.load()) {
+        return 0;
+    }
+    
+    // Check if qpair is disconnected
+    if (!ctx->qpair) {
+        // QPair is disconnected - can't submit new operations
+        // Return 0 to indicate no submission, but don't break the loop
+        // The poller will continue and may recover
         return 0;
     }
     
@@ -329,21 +342,46 @@ int PollThreadManager::poller_func(void* arg) {
         return 0;
     }
     
-    // Process completions (non-blocking)
-    spdk_nvme_qpair_process_completions(ctx->qpair, 0);
-    
-    // Submit new I/O to maintain depth (limit submissions per poll to avoid starvation)
-    int submitted = 0;
-    const int max_submissions_per_poll = 32;
-    while (ctx->outstanding_io.load() < ctx->target_iodepth && 
-           !ctx->should_stop.load() && submitted < max_submissions_per_poll) {
-        if (submit_next_io(ctx) == 0) {
-            break; // No more I/O to submit
+    // Check if qpair needs reconnection
+    if (!ctx->qpair) {
+        // Try to reconnect (only one thread should do this)
+        std::lock_guard<std::mutex> lock(qpair_mutex_);
+        if (!shared_qpair_ && ctx->spdk_ctx) {
+            // This thread will attempt reconnection
+            struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, actual_qpair_depth_);
+            if (new_qpair) {
+                shared_qpair_ = new_qpair;
+                std::cout << "QPair reconnected successfully" << std::endl;
+            } else {
+                // Reconnection failed - will retry next poll
+                usleep(100000); // Wait 100ms before retrying
+                return 1;
+            }
         }
-        submitted++;
+        // Update this thread's qpair pointer
+        ctx->qpair = shared_qpair_;
     }
     
-    return 1; // Continue polling
+    // Process completions (non-blocking) - only if qpair is valid
+    if (ctx->qpair) {
+        spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+    }
+    
+    // Submit new I/O to maintain depth (limit submissions per poll to avoid starvation)
+    // Only try to submit if qpair is valid
+    if (ctx->qpair) {
+        int submitted = 0;
+        const int max_submissions_per_poll = 32;
+        while (ctx->outstanding_io.load() < ctx->target_iodepth && 
+               !ctx->should_stop.load() && submitted < max_submissions_per_poll) {
+            if (submit_next_io(ctx) == 0) {
+                break; // No more I/O to submit (could be qpair disconnected, depth reached, or generation failed)
+            }
+            submitted++;
+        }
+    }
+    
+    return 1; // Continue polling (even if qpair is disconnected, keep the loop running)
 }
 
 void PollThreadManager::thread_func(PollThreadContext* ctx) {
@@ -403,10 +441,18 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                           << ", consecutive=" << consecutive_errors << ")" << std::endl;
                 if (consecutive_errors >= max_consecutive_errors) {
                     std::cerr << "Error: QPair disconnected after " << consecutive_errors 
-                              << " consecutive errors. Continuing to run for full duration..." << std::endl;
-                    // Don't break - continue running even if QPair is disconnected
-                    // This allows the application to complete its full runtime
-                    ctx->qpair = nullptr; // Mark QPair as invalid
+                              << " consecutive errors. Attempting to reconnect..." << std::endl;
+                    // Mark QPair as invalid and attempt reconnection
+                    {
+                        std::lock_guard<std::mutex> lock(qpair_mutex_);
+                        if (shared_qpair_) {
+                            // Clean up old qpair
+                            ctx->spdk_ctx->delete_qpair(shared_qpair_);
+                            shared_qpair_ = nullptr;
+                        }
+                        ctx->qpair = nullptr;
+                    }
+                    // Reconnection will be attempted in next poll cycle
                 }
             } else {
                 if (consecutive_errors > 0) {
@@ -575,8 +621,9 @@ int PollThreadManager::start() {
     }
     std::cout << "QPair ready for I/O" << std::endl;
     
-    // Store the actual QPair depth for later use
-    uint32_t actual_qpair_depth = qpair_depth;
+    // Store the actual QPair depth for later use (static for reconnection)
+    actual_qpair_depth_ = qpair_depth;
+    shared_qpair_ = shared_qpair; // Store in static for reconnection
     
     // Create threads - all will share the same QPair
     for (uint32_t i = 0; i < num_cores_; i++) {
@@ -585,7 +632,7 @@ int PollThreadManager::start() {
         ctx->spdk_ctx = spdk_ctx_;
         // Distribute the actual QPair depth across threads (not the requested depth)
         // This ensures we don't try to submit more I/O than the QPair can handle
-        ctx->target_iodepth = actual_qpair_depth / num_cores_;
+        ctx->target_iodepth = actual_qpair_depth_ / num_cores_;
         ctx->generator = generator_;
         ctx->lba_mgr = lba_mgr_;
         ctx->range_size = range_size_;
@@ -632,13 +679,88 @@ void PollThreadManager::wait() {
     }
     
     // Cleanup shared QPair after all threads are done
-    if (!threads_.empty() && threads_[0]->qpair) {
-        spdk_ctx_->delete_qpair(threads_[0]->qpair);
+    {
+        std::lock_guard<std::mutex> lock(qpair_mutex_);
+        if (shared_qpair_) {
+            spdk_ctx_->delete_qpair(shared_qpair_);
+            shared_qpair_ = nullptr;
+        }
         // Clear QPair from all contexts
         for (auto& ctx : threads_) {
             ctx->qpair = nullptr;
         }
     }
+}
+
+struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth) {
+    if (!ctx || !ctx->spdk_ctx) {
+        return nullptr;
+    }
+    
+    struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
+    if (!ctrlr) {
+        std::cerr << "Error: No controller available for reconnection" << std::endl;
+        return nullptr;
+    }
+    
+    // Create new qpair with same options
+    spdk_nvme_io_qpair_opts opts;
+    spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+    opts.qprio = SPDK_NVME_QPRIO_URGENT;
+    opts.io_queue_size = qpair_depth;
+    
+    std::cout << "Reconnecting QPair with queue depth: " << qpair_depth << std::endl;
+    struct spdk_nvme_qpair* new_qpair = ctx->spdk_ctx->create_qpair(qpair_depth, &opts);
+    if (!new_qpair) {
+        std::cerr << "Error: Failed to create new QPair for reconnection" << std::endl;
+        return nullptr;
+    }
+    
+    // Poll for connection (same logic as in start())
+    int poll_count = 0;
+    const int max_polls = 10000; // Max 10 seconds
+    bool connected = false;
+    
+    while (poll_count < max_polls) {
+        int rc = spdk_nvme_qpair_process_completions(new_qpair, 0);
+        
+        if (rc >= 0) {
+            usleep(100); // Small delay
+            rc = spdk_nvme_qpair_process_completions(new_qpair, 0);
+            if (rc >= 0) {
+                connected = true;
+                break;
+            }
+        } else if (rc == -ENXIO || rc == -ENODEV) {
+            std::cerr << "Error: QPair reconnection failed permanently (rc=" << rc << ")" << std::endl;
+            ctx->spdk_ctx->delete_qpair(new_qpair);
+            return nullptr;
+        }
+        
+        usleep(1000); // 1ms delay
+        poll_count++;
+        
+        if (poll_count % 1000 == 0) {
+            std::cout << "  Still reconnecting... (" << (poll_count / 1000) << "s)" << std::endl;
+        }
+    }
+    
+    if (!connected) {
+        std::cerr << "Error: QPair reconnection failed to establish after " 
+                  << (max_polls / 1000) << " seconds" << std::endl;
+        ctx->spdk_ctx->delete_qpair(new_qpair);
+        return nullptr;
+    }
+    
+    // Verify qpair is ready
+    for (int i = 0; i < 100; i++) {
+        spdk_nvme_qpair_process_completions(new_qpair, 0);
+        usleep(1000);
+    }
+    
+    std::cout << "QPair reconnected successfully after " << (poll_count * 1000 / 1000) << " ms" << std::endl;
+    
+    return new_qpair;
 }
 
 } // namespace xload
