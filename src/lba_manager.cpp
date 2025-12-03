@@ -16,16 +16,56 @@ LbaManager::LbaManager(uint64_t namespace_size, uint64_t start_lba, uint64_t end
     }
 }
 
-uint64_t LbaManager::get_next_dst_lba(uint64_t range_size) {
-    if (dst_current_ + range_size > dst_end_) {
+uint64_t LbaManager::get_and_advance_dst_lba(uint64_t total_blocks) {
+    if (total_blocks == 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return dst_current_;
+    }
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Get current LBA
+    uint64_t lba = dst_current_;
+    
+    // Advance by total blocks
+    dst_current_ += total_blocks;
+    
+    // Wrap around if we exceed the end
+    if (dst_current_ >= dst_end_) {
         // Wrap around to start
         dst_current_ = dst_start_;
     }
     
-    uint64_t lba = dst_current_;
-    dst_current_ += range_size;
-    
     return lba;
+}
+
+uint64_t LbaManager::get_next_dst_lba(uint64_t range_size) {
+    // Just return the current LBA without advancing
+    // The caller should call advance_dst_lba() after the operation completes
+    // with the actual total_blocks that were copied
+    (void)range_size; // Not used anymore, but kept for API compatibility
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dst_current_;
+}
+
+void LbaManager::advance_dst_lba(uint64_t total_blocks) {
+    if (total_blocks == 0) {
+        return; // Nothing to advance
+    }
+    
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    // Advance by total blocks
+    dst_current_ += total_blocks;
+    
+    // Wrap around if we exceed the end
+    // Check if the current position (after advance) would exceed the end for the next operation
+    // We wrap when we've reached or exceeded the end
+    if (dst_current_ >= dst_end_) {
+        // Wrap around to start
+        dst_current_ = dst_start_;
+    }
 }
 
 uint64_t LbaManager::get_random_src_lba(uint64_t range_size) {
@@ -40,10 +80,12 @@ uint64_t LbaManager::get_random_src_lba(uint64_t range_size) {
 }
 
 void LbaManager::reset_dst_lba() {
+    std::lock_guard<std::mutex> lock(mutex_);
     dst_current_ = dst_start_;
 }
 
 void LbaManager::set_dst_range(uint64_t start, uint64_t end) {
+    std::lock_guard<std::mutex> lock(mutex_);
     dst_start_ = start;
     dst_end_ = (end == 0 || end > namespace_size_) ? namespace_size_ : end;
     dst_current_ = dst_start_;

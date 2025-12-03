@@ -139,10 +139,11 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
     // Get random number of ranges
     op.num_ranges = get_random_num_ranges();
     op.dst_nsid = dst_nsid_;
-    op.dst_lba = lba_mgr.get_next_dst_lba(range_size);
     op.total_blocks = 0;
     op.start_time_ns = 0;
     op.user_data = nullptr;
+    
+    // We'll get the destination LBA after we calculate the actual total_blocks
     
     // For format 0 (same namespace), all ranges must use the destination namespace
     // For format 2 (cross-namespace), we can use different source namespaces
@@ -251,6 +252,12 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         // Update total_blocks with actual blocks (nlb + 1)
         op.total_blocks += (nlb_value + 1);
     }
+    
+    // CRITICAL: Get destination LBA and atomically advance by total_blocks
+    // This ensures the next XCOPY command doesn't overlap with this one's destination
+    // In XCOPY, all ranges are copied to consecutive destination LBAs starting from dst_lba
+    // This must be atomic to prevent race conditions when multiple threads generate operations
+    op.dst_lba = lba_mgr.get_and_advance_dst_lba(op.total_blocks);
     
     return 0;
 }
