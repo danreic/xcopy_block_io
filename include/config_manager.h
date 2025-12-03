@@ -26,6 +26,7 @@ struct Config {
     std::vector<uint32_t> src_nsids;  // Source namespace IDs (for cross-namespace)
     uint64_t dst_lba_start;      // Starting LBA for destination
     uint64_t dst_lba_end;        // Ending LBA for destination (0 = use namespace size)
+    uint64_t range_size;         // Size of each range in blocks (default: 2048 = 1MB at 512B/block)
     
     // Output configuration
     bool json_output;            // Output in JSON format

@@ -95,8 +95,8 @@ int main(int argc, char** argv) {
     // Initialize statistics
     Statistics stats;
     
-    // Calculate range size (use 8 blocks as default, could be configurable)
-    uint64_t range_size = 8;
+    // Use range size from configuration (default: 2048 blocks = 1MB at 512B/block)
+    uint64_t range_size = config.range_size;
     
     // Initialize poll thread manager
     PollThreadManager thread_mgr(&spdk_ctx, config.num_cores, config.iodepth,
