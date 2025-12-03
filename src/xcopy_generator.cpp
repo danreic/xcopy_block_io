@@ -259,6 +259,17 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
     // This must be atomic to prevent race conditions when multiple threads generate operations
     op.dst_lba = lba_mgr.get_and_advance_dst_lba(op.total_blocks);
     
+    // Validate destination LBA is within namespace bounds
+    uint64_t dst_ns_size = get_ns_size(op.dst_nsid);
+    if (dst_ns_size > 0 && op.dst_lba + op.total_blocks > dst_ns_size) {
+        // This should not happen if LbaManager is working correctly
+        // But add validation as a safety check
+        std::cerr << "ERROR: Destination LBA out of bounds: dst_lba=" << op.dst_lba
+                  << ", total_blocks=" << op.total_blocks
+                  << ", namespace_size=" << dst_ns_size << std::endl;
+        return -1;
+    }
+    
     return 0;
 }
 

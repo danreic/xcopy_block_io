@@ -27,12 +27,20 @@ uint64_t LbaManager::get_and_advance_dst_lba(uint64_t total_blocks) {
     // Get current LBA
     uint64_t lba = dst_current_;
     
-    // Advance by total blocks
-    dst_current_ += total_blocks;
+    // CRITICAL: Check if this operation would exceed the destination range
+    // If so, wrap around to the start first
+    if (lba + total_blocks > dst_end_) {
+        // Operation would exceed the end - wrap to start
+        lba = dst_start_;
+        dst_current_ = dst_start_ + total_blocks;
+    } else {
+        // Operation fits - advance normally
+        dst_current_ += total_blocks;
+    }
     
-    // Wrap around if we exceed the end
+    // Check if the new position exceeds the end (for next operation)
     if (dst_current_ >= dst_end_) {
-        // Wrap around to start
+        // Wrap around to start for next operation
         dst_current_ = dst_start_;
     }
     
