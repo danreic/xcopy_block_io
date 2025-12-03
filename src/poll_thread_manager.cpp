@@ -281,8 +281,25 @@ int PollThreadManager::start() {
     threads_.clear();
     threads_.reserve(num_cores_);
     
-    // Create SPDK threads first (must be done from main SPDK context)
-    // SPDK threads cannot be created from regular pthreads
+    // Check if we're in an SPDK thread context - if not, create a main thread first
+    // SPDK threads can only be created from within an SPDK thread context
+    struct spdk_thread* main_thread = spdk_get_thread();
+    bool created_main_thread = false;
+    
+    if (!main_thread) {
+        // Not in an SPDK thread - create a main thread first
+        // This is required because spdk_thread_create needs a thread context
+        main_thread = spdk_thread_create("xload_main", nullptr);
+        if (!main_thread) {
+            std::cerr << "Failed to create main SPDK thread" << std::endl;
+            std::cerr << "Error: Cannot create SPDK threads without thread context" << std::endl;
+            return -1;
+        }
+        spdk_set_thread(main_thread);
+        created_main_thread = true;
+    }
+    
+    // Now create worker SPDK threads from the main thread context
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -294,14 +311,16 @@ int PollThreadManager::start() {
         ctx->stats = stats_;
         ctx->should_stop = false;
         
-        // Create SPDK thread from main context (before creating pthread)
-        // This must be done from an SPDK thread context, which the main thread is
         char name[64];
         snprintf(name, sizeof(name), "xload_thread_%u", i);
         ctx->spdk_thread = spdk_thread_create(name, nullptr);
         
         if (!ctx->spdk_thread) {
             std::cerr << "Failed to create SPDK thread " << i << std::endl;
+            // Cleanup main thread if we created it
+            if (created_main_thread && main_thread) {
+                spdk_thread_exit(main_thread);
+            }
             return -1;
         }
         

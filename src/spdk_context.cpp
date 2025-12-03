@@ -85,6 +85,13 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
+    // Initialize SPDK thread library (required for creating threads)
+    // This allows us to create SPDK threads later
+    if (spdk_thread_lib_init(nullptr, 0) != 0) {
+        std::cerr << "Failed to initialize SPDK thread library" << std::endl;
+        return -1;
+    }
+    
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
     trid_.trtype = SPDK_NVME_TRANSPORT_TCP;
