@@ -9,6 +9,7 @@ namespace xload {
 SpdkContext::SpdkContext()
     : ctrlr_(nullptr)
     , initialized_(false)
+    , hostnqn_("")
 {
     memset(&trid_, 0, sizeof(trid_));
 }
@@ -27,6 +28,12 @@ bool SpdkContext::probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* tr
     // Set controller options
     if (opts) {
         opts->opts_size = sizeof(*opts);
+        
+        // Set Host NQN if provided (overrides environment variable)
+        if (!ctx->hostnqn_.empty() && ctx->hostnqn_.length() < sizeof(opts->hostnqn)) {
+            strncpy(opts->hostnqn, ctx->hostnqn_.c_str(), sizeof(opts->hostnqn) - 1);
+            opts->hostnqn[sizeof(opts->hostnqn) - 1] = '\0';
+        }
     }
     
     return true;
@@ -48,8 +55,12 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return 0;
     }
     
+    // Store hostnqn for use in probe callback
+    hostnqn_ = hostnqn;
+    
     // Set hostnqn via environment variable BEFORE spdk_env_init()
     // This ensures SPDK reads the correct Host NQN during initialization
+    // However, we'll also set it in controller options to ensure it's used
     if (!hostnqn.empty()) {
         setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
     }

@@ -62,6 +62,7 @@ private:
     struct spdk_nvme_transport_id trid_;
     std::vector<NamespaceInfo> namespaces_;
     bool initialized_;
+    std::string hostnqn_;  // Store hostnqn for use in probe callback
     
     // Probe callback
     static bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
