@@ -237,28 +237,53 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     
     // Poll QPair directly without SPDK thread polling
     // This is a workaround - we poll the QPair completion queue directly
+    int consecutive_errors = 0;
+    const int max_consecutive_errors = 10; // Allow some transient errors
+    
     while (!ctx->should_stop.load()) {
-        // Submit I/O if we have capacity
-        while (ctx->outstanding_io.load() < ctx->target_iodepth) {
-            if (submit_next_io(ctx) == 0) {
-                break;  // No more I/O to submit
+        // Submit I/O if we have capacity and QPair is still valid
+        if (ctx->qpair) {
+            while (ctx->outstanding_io.load() < ctx->target_iodepth) {
+                if (submit_next_io(ctx) == 0) {
+                    break;  // No more I/O to submit
+                }
             }
         }
         
         // Poll for completions directly on the QPair
-        int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
-        if (num_completions < 0) {
-            break;  // Error
+        if (ctx->qpair) {
+            int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+            if (num_completions < 0) {
+                consecutive_errors++;
+                if (consecutive_errors >= max_consecutive_errors) {
+                    std::cerr << "Error: QPair disconnected after " << consecutive_errors 
+                              << " consecutive errors. Continuing to run for full duration..." << std::endl;
+                    // Don't break - continue running even if QPair is disconnected
+                    // This allows the application to complete its full runtime
+                    ctx->qpair = nullptr; // Mark QPair as invalid
+                }
+            } else {
+                consecutive_errors = 0; // Reset error counter on success
+            }
+        } else {
+            // QPair is disconnected - just wait and continue
+            // This allows the application to complete its full runtime
+            usleep(1000); // Longer sleep when QPair is disconnected
         }
         
         // Small sleep to avoid 100% CPU (not ideal but works for sanity test)
         usleep(100);
     }
     
-    // Wait for outstanding I/O to complete
-    while (ctx->outstanding_io.load() > 0) {
-        spdk_nvme_qpair_process_completions(ctx->qpair, 0);
-        usleep(100);
+    // Wait for outstanding I/O to complete (if QPair is still valid)
+    if (ctx->qpair) {
+        while (ctx->outstanding_io.load() > 0) {
+            spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+            usleep(100);
+        }
+    } else {
+        // QPair disconnected - just wait a bit for any pending operations
+        usleep(1000);
     }
     
     // Cleanup - don't delete QPair here as it's shared across threads
