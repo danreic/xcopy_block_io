@@ -189,37 +189,64 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         }
         
         // Fill in range descriptor
-        // Note: SPDK's spdk_nvme_scc_source_range structure format
-        // According to NVMe spec:
-        // - Format 0 (same namespace): DWORD 0-1: Reserved (must be 0), DWORD 2-3: Source LBA,
-        //                              DWORD 4: Reserved, DWORD 5: Number of Blocks (0-based, 16-bit)
-        // - Format 2 (cross-namespace): DWORD 0: Reserved, DWORD 1: Source NSID,
-        //                               DWORD 2-3: Source LBA, DWORD 4: Reserved,
-        //                               DWORD 5: Number of Blocks (0-based, 16-bit)
+        // According to NVMe spec, range descriptor is 32 bytes (8 DWORDs):
+        // - Format 0 (same namespace): 
+        //   DWORD 0: Reserved (0)
+        //   DWORD 1: Reserved (0)
+        //   DWORD 2-3: Source LBA (64-bit, little-endian)
+        //   DWORD 4: Reserved (0)
+        //   DWORD 5: Number of Blocks (16-bit, 0-based) + Reserved (16-bit)
+        //   DWORD 6-7: Destination LBA (64-bit, little-endian) - NOT in range descriptor!
         //
-        // SPDK's spdk_nvme_ns_cmd_copy() expects format 0 (same namespace) by default.
-        // The namespace handle passed to the function is the source namespace.
-        // For format 2 (cross-namespace), we need to set the source NSID in DWORD 1.
+        // - Format 2 (cross-namespace):
+        //   DWORD 0: Reserved (0)
+        //   DWORD 1: Source NSID
+        //   DWORD 2-3: Source LBA (64-bit, little-endian)
+        //   DWORD 4: Reserved (0)
+        //   DWORD 5: Number of Blocks (16-bit, 0-based) + Reserved (16-bit)
+        //   DWORD 6-7: Destination LBA (64-bit, little-endian) - NOT in range descriptor!
+        //
+        // Note: Destination LBA is passed separately to spdk_nvme_ns_cmd_copy(), not in range descriptor
+        // The range descriptor only contains source information
+        
+        // Clear the entire range descriptor
         memset(&op.ranges[i], 0, sizeof(op.ranges[i]));
-        op.ranges[i].slba = src_lba;
         
-        // nlb is 16-bit (0-based), so ensure we don't exceed 0xFFFF
-        uint16_t nlb_value = (range_size > 0x10000) ? 0xFFFF : (range_size - 1);
-        op.ranges[i].nlb = nlb_value; // 0-based (0 = 1 block, 2047 = 2048 blocks)
-        op.ranges[i].eilbrt = 0; // Expected initial logical block reference tag
-        op.ranges[i].elbatm = 0; // Expected LBA application tag mask
-        op.ranges[i].elbat = 0;  // Expected LBA application tag
+        // Access as DWORDs to ensure correct layout
+        uint32_t* dwords = reinterpret_cast<uint32_t*>(&op.ranges[i]);
+        uint16_t* words = reinterpret_cast<uint16_t*>(&op.ranges[i]);
         
-        // Determine if we should use format 2 (cross-namespace) or format 0 (same-namespace)
+        // DWORD 0: Reserved (already 0 from memset)
+        // DWORD 1: Source NSID (for format 2) or Reserved (0 for format 0)
         bool use_format2 = false;
         if (enable_cross_namespace_ && target_supports_cross_namespace_ && 
             src_nsid != op.dst_nsid) {
-            // Cross-namespace copy: use format 2, set source NSID in DWORD 1
+            // Format 2: Set source NSID in DWORD 1
             use_format2 = true;
-            uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[i]);
-            range_dwords[1] = src_nsid; // DWORD 1 = Source NSID (format 2)
+            dwords[1] = src_nsid;
         }
-        // If use_format2 is false, DWORD 1 remains 0 (format 0, same-namespace)
+        // Format 0: DWORD 1 remains 0 (already set by memset)
+        
+        // DWORD 2-3: Source LBA (64-bit, little-endian)
+        // Store as two 32-bit values (little-endian)
+        dwords[2] = src_lba & 0xFFFFFFFF;
+        dwords[3] = (src_lba >> 32) & 0xFFFFFFFF;
+        
+        // DWORD 4: Reserved (already 0 from memset)
+        
+        // DWORD 5: Number of Blocks (16-bit, 0-based) in lower 16 bits, upper 16 bits reserved
+        uint16_t nlb_value = (range_size > 0x10000) ? 0xFFFF : (range_size - 1);
+        // DWORD 5 is at offset 20 bytes = 5 * 4 bytes
+        // In little-endian: lower 16 bits first, then upper 16 bits
+        words[10] = nlb_value; // Lower 16 bits of DWORD 5 (little-endian)
+        // words[11] is upper 16 bits of DWORD 5 (Reserved), already 0 from memset
+        
+        // Also set using structure fields if they exist (for compatibility)
+        op.ranges[i].slba = src_lba;
+        op.ranges[i].nlb = nlb_value;
+        op.ranges[i].eilbrt = 0;
+        op.ranges[i].elbatm = 0;
+        op.ranges[i].elbat = 0;
         
         // Update total_blocks with actual blocks (nlb + 1)
         op.total_blocks += (nlb_value + 1);

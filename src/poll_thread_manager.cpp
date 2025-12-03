@@ -150,30 +150,60 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     op.user_data = ctx;
     
     // Get namespace for the command
-    // For format 0 (same namespace), use destination namespace (which is also source)
+    // For format 0 (same namespace), the namespace handle should be the SOURCE namespace
+    // (which is the same as destination for same-namespace copy)
     // For format 2 (cross-namespace), we still use destination namespace handle
     // but source NSIDs are specified in range descriptors
-    struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
-    if (!ns) {
-        // Namespace not found - free operation and return
-        op.free_ranges();
-        return 0;
-    }
-    
-    // Debug: Log first few operations to verify format
-    static std::atomic<int> debug_count(0);
-    int dbg = debug_count.fetch_add(1);
-    if (dbg < 3 && op.ranges && op.num_ranges > 0) {
+    // 
+    // IMPORTANT: Check the first range to determine which namespace to use
+    // For format 0, all ranges should be from the same namespace as destination
+    // For format 2, ranges can have different source NSIDs
+    struct spdk_nvme_ns* ns = nullptr;
+    if (op.ranges && op.num_ranges > 0) {
+        // Check if format 2 is being used (DWORD 1 != 0)
         uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[0]);
         uint32_t dword1 = range_dwords[1];
-        std::cout << "Debug XCOPY #" << (dbg + 1) 
-                  << ": dst_nsid=" << op.dst_nsid
-                  << ", num_ranges=" << op.num_ranges
-                  << ", range[0] DWORD1=" << dword1
-                  << " (0=format0, >0=format2)"
-                  << ", nlb=" << op.ranges[0].nlb
-                  << ", slba=" << op.ranges[0].slba
-                  << std::endl;
+        
+        // Debug: Log first few operations to verify format
+        static std::atomic<int> debug_count(0);
+        int dbg = debug_count.fetch_add(1);
+        if (dbg < 5) {
+            // Hex dump of first range descriptor (32 bytes)
+            std::cout << "Debug XCOPY #" << (dbg + 1) 
+                      << ": dst_nsid=" << op.dst_nsid
+                      << ", num_ranges=" << op.num_ranges
+                      << ", range[0] DWORD1=" << dword1
+                      << " (0=format0, >0=format2)"
+                      << ", nlb=" << op.ranges[0].nlb
+                      << ", slba=" << op.ranges[0].slba
+                      << ", dst_lba=" << op.dst_lba
+                      << std::endl;
+            std::cout << "  Range[0] hex dump (32 bytes): ";
+            uint8_t* range_bytes = reinterpret_cast<uint8_t*>(&op.ranges[0]);
+            for (int i = 0; i < 32 && i < sizeof(op.ranges[0]); i++) {
+                printf("%02x ", range_bytes[i]);
+            }
+            std::cout << std::endl;
+        }
+        
+        if (dword1 == 0) {
+            // Format 0 (same namespace) - use destination namespace as source
+            ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
+        } else {
+            // Format 2 (cross-namespace) - use destination namespace handle
+            // Source NSID is in DWORD 1 of each range descriptor
+            ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
+        }
+    } else {
+        // Fallback: use destination namespace
+        ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
+    }
+    
+    if (!ns) {
+        // Namespace not found - free operation and return
+        std::cerr << "Error: Namespace " << op.dst_nsid << " not found" << std::endl;
+        op.free_ranges();
+        return 0;
     }
     
     // Create copy for callback (SPDK will call callback with this)
