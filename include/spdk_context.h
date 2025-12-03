@@ -57,12 +57,16 @@ public:
     // Check if initialized
     bool is_initialized() const { return initialized_; }
     
+    // Get main SPDK thread (for workaround)
+    struct spdk_thread* get_main_thread() const { return main_thread_; }
+    
 private:
     struct spdk_nvme_ctrlr* ctrlr_;
     struct spdk_nvme_transport_id trid_;
     std::vector<NamespaceInfo> namespaces_;
     bool initialized_;
     std::string hostnqn_;  // Store hostnqn for use in probe callback
+    struct spdk_thread* main_thread_;  // Main SPDK thread (workaround)
     
     // Probe callback
     static bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,

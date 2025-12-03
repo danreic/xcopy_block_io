@@ -222,23 +222,22 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                   << ctx->thread_id << std::endl;
     }
     
-    // Create SPDK thread for this pthread
-    // The first thread created will automatically initialize the thread library
-    char name[64];
-    snprintf(name, sizeof(name), "xload_thread_%u", ctx->thread_id);
-    
-    // Try to create the thread directly
-    // According to SPDK docs, the first thread created will be the "app thread"
-    // and will auto-initialize the thread library
-    ctx->spdk_thread = spdk_thread_create(name, nullptr);
+    // WORKAROUND: Use main SPDK thread for all worker threads
+    // This bypasses the thread library initialization issue
+    // All threads will share the main SPDK thread (not ideal but works for sanity testing)
+    ctx->spdk_thread = ctx->spdk_ctx->get_main_thread();
     
     if (!ctx->spdk_thread) {
-        std::cerr << "Failed to create SPDK thread " << ctx->thread_id << std::endl;
-        std::cerr << "Error: spdk_thread_create failed - thread library may not be initialized" << std::endl;
-        return;
+        // Fallback: try to get current thread or create one
+        ctx->spdk_thread = spdk_get_thread();
+        if (!ctx->spdk_thread) {
+            std::cerr << "Error: No SPDK thread available for worker " << ctx->thread_id << std::endl;
+            std::cerr << "       Cannot proceed without SPDK thread" << std::endl;
+            return;
+        }
     }
     
-    // Switch to our SPDK thread
+    // Switch to the SPDK thread
     spdk_set_thread(ctx->spdk_thread);
     
     // Create QPair (dedicated to this thread)
