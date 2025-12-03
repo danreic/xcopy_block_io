@@ -66,11 +66,11 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
     uint16_t status_code = cpl->status.sc;
     
     if (spdk_nvme_cpl_is_error(cpl) || status_code != 0) {
-        // Log detailed error information (limit to first 10 errors and then every 100th error)
+        // Log detailed error information (limit to first 5 errors and then every 1000th error)
         static std::atomic<uint64_t> error_count(0);
         uint64_t count = error_count.fetch_add(1);
         
-        bool should_log = (count < 10) || (count % 100 == 0);
+        bool should_log = (count < 5) || (count % 1000 == 0);
         
         if (should_log) {
             std::cerr << "XCOPY command failed #" << count << ": SCT=" << (int)cpl->status.sct 
@@ -80,15 +80,15 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
                       << " dst_lba=" << op->dst_lba
                       << " total_blocks=" << op->total_blocks;
             
-            // Log first range details for debugging
-            if (op->ranges && op->num_ranges > 0) {
+            // Log first range details for debugging (only for first few errors)
+            if (count < 5 && op->ranges && op->num_ranges > 0) {
                 std::cerr << " first_range: src_lba=" << op->ranges[0].slba
                           << " nlb=" << op->ranges[0].nlb
                           << " (actual_blocks=" << (op->ranges[0].nlb + 1) << ")";
             }
             
-            // Check if destination LBA + total_blocks exceeds namespace
-            if (ctx->spdk_ctx) {
+            // Check if destination LBA + total_blocks exceeds namespace (only for first few errors)
+            if (count < 5 && ctx->spdk_ctx) {
                 const NamespaceInfo* ns_info = ctx->spdk_ctx->get_ns_info(op->dst_nsid);
                 if (ns_info) {
                     uint64_t dst_end = op->dst_lba + op->total_blocks;
