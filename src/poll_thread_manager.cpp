@@ -66,33 +66,40 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
     uint16_t status_code = cpl->status.sc;
     
     if (spdk_nvme_cpl_is_error(cpl) || status_code != 0) {
-        // Log detailed error information
-        std::cerr << "XCOPY command failed: SCT=" << (int)cpl->status.sct 
-                  << " SC=" << (int)cpl->status.sc 
-                  << " (0x" << std::hex << (int)cpl->status.sc << std::dec << ")"
-                  << " num_ranges=" << op->num_ranges
-                  << " dst_lba=" << op->dst_lba
-                  << " total_blocks=" << op->total_blocks;
+        // Log detailed error information (limit to first 10 errors and then every 100th error)
+        static std::atomic<uint64_t> error_count(0);
+        uint64_t count = error_count.fetch_add(1);
         
-        // Log first range details for debugging
-        if (op->ranges && op->num_ranges > 0) {
-            std::cerr << " first_range: src_lba=" << op->ranges[0].slba
-                      << " nlb=" << op->ranges[0].nlb
-                      << " (actual_blocks=" << (op->ranges[0].nlb + 1) << ")";
-        }
+        bool should_log = (count < 10) || (count % 100 == 0);
         
-        // Check if destination LBA + total_blocks exceeds namespace
-        if (ctx->spdk_ctx) {
-            const NamespaceInfo* ns_info = ctx->spdk_ctx->get_ns_info(op->dst_nsid);
-            if (ns_info) {
-                uint64_t dst_end = op->dst_lba + op->total_blocks;
-                std::cerr << " dst_ns_size=" << ns_info->size_blocks
-                          << " dst_end=" << dst_end
-                          << " (exceeds=" << (dst_end > ns_info->size_blocks ? "YES" : "NO") << ")";
+        if (should_log) {
+            std::cerr << "XCOPY command failed #" << count << ": SCT=" << (int)cpl->status.sct 
+                      << " SC=" << (int)cpl->status.sc 
+                      << " (0x" << std::hex << (int)cpl->status.sc << std::dec << ")"
+                      << " num_ranges=" << op->num_ranges
+                      << " dst_lba=" << op->dst_lba
+                      << " total_blocks=" << op->total_blocks;
+            
+            // Log first range details for debugging
+            if (op->ranges && op->num_ranges > 0) {
+                std::cerr << " first_range: src_lba=" << op->ranges[0].slba
+                          << " nlb=" << op->ranges[0].nlb
+                          << " (actual_blocks=" << (op->ranges[0].nlb + 1) << ")";
             }
+            
+            // Check if destination LBA + total_blocks exceeds namespace
+            if (ctx->spdk_ctx) {
+                const NamespaceInfo* ns_info = ctx->spdk_ctx->get_ns_info(op->dst_nsid);
+                if (ns_info) {
+                    uint64_t dst_end = op->dst_lba + op->total_blocks;
+                    std::cerr << " dst_ns_size=" << ns_info->size_blocks
+                              << " dst_end=" << dst_end
+                              << " (exceeds=" << (dst_end > ns_info->size_blocks ? "YES" : "NO") << ")";
+                }
+            }
+            
+            std::cerr << std::endl;
         }
-        
-        std::cerr << std::endl;
         
         // Record failure
         ctx->stats->record_failure(status_code);
