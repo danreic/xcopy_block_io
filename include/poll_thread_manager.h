@@ -11,6 +11,7 @@
 #include <thread>
 #include "spdk_context.h"
 #include "xcopy_generator.h"
+#include "lba_manager.h"
 #include "statistics.h"
 #include "error_handler.h"
 #include "high_res_timer.h"

@@ -104,6 +104,16 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
         // Record failure
         ctx->stats->record_failure(status_code);
         
+        // Handle SC=8 (LBA Out of Range) - skip this LBA range
+        // Some targets have restrictions on which LBAs can be used for XCOPY
+        if (status_code == 0x8) {
+            // Reset destination LBA to start to avoid hitting more invalid ranges
+            // This is a workaround for targets with LBA restrictions
+            if (ctx->lba_mgr) {
+                ctx->lba_mgr->reset_dst_lba();
+            }
+        }
+        
         // Check if it's a saturation error (backpressure)
         if (ErrorHandler::is_saturation_error(status_code)) {
             // Defer retry - don't block
