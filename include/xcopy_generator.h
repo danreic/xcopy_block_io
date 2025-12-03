@@ -37,7 +37,9 @@ public:
     XcopyGenerator(uint32_t max_ranges, 
                    const std::vector<uint32_t>& src_nsids,
                    uint32_t dst_nsid,
-                   const std::vector<const struct spdk_nvme_ns*>& namespaces);
+                   const std::vector<const struct spdk_nvme_ns*>& namespaces,
+                   bool enable_cross_namespace = false,
+                   bool target_supports_cross_namespace = false);
     
     // Generate next XCOPY operation with randomized num_ranges
     int generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t range_size);
@@ -51,6 +53,8 @@ private:
     std::vector<uint32_t> src_nsids_;
     uint32_t dst_nsid_;
     std::vector<const struct spdk_nvme_ns*> namespaces_;
+    bool enable_cross_namespace_;
+    bool target_supports_cross_namespace_;
     std::mt19937_64 rng_;
     std::uniform_int_distribution<uint32_t> range_dist_;
     

@@ -20,6 +20,7 @@ Config::Config()
     , dst_lba_start(0)
     , dst_lba_end(0)
     , range_size(2048)  // Default: 2048 blocks = 1MB at 512 bytes/block
+    , enable_cross_namespace(false)  // Default: same-namespace copy only (format 0)
     , json_output(false)
     , verbose(false)
 {
@@ -73,6 +74,7 @@ void Config::print() const {
     std::cout << "  I/O Depth: " << iodepth << std::endl;
     std::cout << "  CPU Cores: " << num_cores << std::endl;
     std::cout << "  Max Ranges: " << max_ranges << std::endl;
+    std::cout << "  Range Size: " << range_size << " blocks" << std::endl;
     std::cout << "  Destination NSID: " << dst_nsid << std::endl;
     if (!src_nsids.empty()) {
         std::cout << "  Source NSIDs: ";
@@ -82,6 +84,7 @@ void Config::print() const {
         }
         std::cout << std::endl;
     }
+    std::cout << "  Cross-Namespace Copy: " << (enable_cross_namespace ? "enabled" : "disabled") << std::endl;
     std::cout << "  Destination LBA: " << dst_lba_start;
     if (dst_lba_end > 0) {
         std::cout << " - " << dst_lba_end;
@@ -110,6 +113,7 @@ void ConfigManager::print_usage(const char* prog_name) {
     std::cout << "  --dst-lba-start LBA   Starting LBA for destination (default: 0)" << std::endl;
     std::cout << "  --dst-lba-end LBA     Ending LBA for destination (default: 0 = use namespace size)" << std::endl;
     std::cout << "  --range-size SIZE     Size of each range in blocks (default: 2048 = 1MB at 512B/block)" << std::endl;
+    std::cout << "  --enable-cross-ns     Enable cross-namespace copy (format 2, requires TP4130 support)" << std::endl;
     std::cout << std::endl;
     std::cout << "Output Options:" << std::endl;
     std::cout << "  --json                Output statistics in JSON format" << std::endl;
@@ -135,6 +139,7 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
         {"dst-lba-start", required_argument, 0, 1004},
         {"dst-lba-end", required_argument, 0, 1005},
         {"range-size", required_argument, 0, 1006},
+        {"enable-cross-ns", no_argument, 0, 1007},
         {"json", no_argument, 0, 'j'},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
@@ -184,6 +189,9 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
                 break;
             case 1006:
                 config.range_size = strtoull(optarg, nullptr, 0);
+                break;
+            case 1007:
+                config.enable_cross_namespace = true;
                 break;
             case 'j':
                 config.json_output = true;

@@ -27,6 +27,7 @@ struct Config {
     uint64_t dst_lba_start;      // Starting LBA for destination
     uint64_t dst_lba_end;        // Ending LBA for destination (0 = use namespace size)
     uint64_t range_size;         // Size of each range in blocks (default: 2048 = 1MB at 512B/block)
+    bool enable_cross_namespace; // Enable cross-namespace copy (format 2, requires TP4130)
     
     // Output configuration
     bool json_output;            // Output in JSON format

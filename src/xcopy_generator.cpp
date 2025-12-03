@@ -91,11 +91,15 @@ void XcopyOperation::free_ranges() {
 XcopyGenerator::XcopyGenerator(uint32_t max_ranges,
                                const std::vector<uint32_t>& src_nsids,
                                uint32_t dst_nsid,
-                               const std::vector<const struct spdk_nvme_ns*>& namespaces)
+                               const std::vector<const struct spdk_nvme_ns*>& namespaces,
+                               bool enable_cross_namespace,
+                               bool target_supports_cross_namespace)
     : max_ranges_(max_ranges)
     , src_nsids_(src_nsids)
     , dst_nsid_(dst_nsid)
     , namespaces_(namespaces)
+    , enable_cross_namespace_(enable_cross_namespace)
+    , target_supports_cross_namespace_(target_supports_cross_namespace)
     , rng_(std::chrono::steady_clock::now().time_since_epoch().count())
     , range_dist_(1, max_ranges)
 {
@@ -149,28 +153,52 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
             return -1; // Invalid namespace or range too large
         }
         
+        // Validate range_size is reasonable (max 0xFFFF blocks per range)
+        if (range_size == 0 || range_size > 0x10000) {
+            return -1; // Invalid range size
+        }
+        
         // Get random source LBA within namespace bounds
         uint64_t src_lba = lba_mgr.get_random_src_lba(range_size);
         
+        // Validate source LBA + range_size doesn't exceed namespace
+        if (src_lba + range_size > ns_size) {
+            // Adjust src_lba to fit within namespace
+            if (ns_size < range_size) {
+                return -1; // Namespace too small
+            }
+            src_lba = ns_size - range_size;
+        }
+        
         // Fill in range descriptor
         // Note: SPDK's spdk_nvme_scc_source_range structure format
-        // For cross-namespace copy, we need to use format 2 which includes snsid
-        // The structure may vary by SPDK version - using memset and setting known fields
+        // According to NVMe spec:
+        // - Format 0 (same namespace): DWORD 0-1: Reserved (must be 0), DWORD 2-3: Source LBA,
+        //                              DWORD 4: Reserved, DWORD 5: Number of Blocks (0-based)
+        // - Format 2 (cross-namespace): DWORD 0: Reserved, DWORD 1: Source NSID,
+        //                               DWORD 2-3: Source LBA, DWORD 4: Reserved,
+        //                               DWORD 5: Number of Blocks (0-based)
+        //
+        // SPDK's spdk_nvme_ns_cmd_copy() expects format 0 (same namespace) by default.
+        // The namespace handle passed to the function is the source namespace.
+        // For format 2 (cross-namespace), we need to set the source NSID in DWORD 1.
         memset(&op.ranges[i], 0, sizeof(op.ranges[i]));
         op.ranges[i].slba = src_lba;
-        op.ranges[i].nlb = range_size - 1; // 0-based (0 = 1 block)
+        op.ranges[i].nlb = range_size - 1; // 0-based (0 = 1 block, 2047 = 2048 blocks)
         op.ranges[i].eilbrt = 0; // Expected initial logical block reference tag
         op.ranges[i].elbatm = 0; // Expected LBA application tag mask
         op.ranges[i].elbat = 0;  // Expected LBA application tag
         
-        // For cross-namespace copy (format 2), snsid is in the first DWORD
-        // We'll need to set it manually in the structure
-        // Check if structure has snsid field (may be version-dependent)
-        // For now, use spdk_nvme_scc_source_range_set_snsid if available, or manual setting
-        // Since the structure layout may vary, we'll set the raw bytes for snsid
-        // Format 2: DWORD 0 = Reserved, DWORD 1 = Source NSID
-        uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[i]);
-        range_dwords[1] = src_nsid; // Set source NSID in DWORD 1 (format 2)
+        // Determine if we should use format 2 (cross-namespace) or format 0 (same-namespace)
+        bool use_format2 = false;
+        if (enable_cross_namespace_ && target_supports_cross_namespace_ && 
+            src_nsid != op.dst_nsid) {
+            // Cross-namespace copy: use format 2, set source NSID in DWORD 1
+            use_format2 = true;
+            uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[i]);
+            range_dwords[1] = src_nsid; // DWORD 1 = Source NSID (format 2)
+        }
+        // If use_format2 is false, DWORD 1 remains 0 (format 0, same-namespace)
         
         op.total_blocks += range_size;
     }

@@ -67,11 +67,10 @@ int main(int argc, char** argv) {
         return 1;
     }
     
-    // Check cross-namespace copy support if needed
-    if (config.src_nsids.size() > 1 || 
-        (config.src_nsids.size() == 1 && config.src_nsids[0] != config.dst_nsid)) {
+    // Check cross-namespace copy support if enabled
+    if (config.enable_cross_namespace) {
         if (!spdk_ctx.supports_cross_namespace_copy()) {
-            std::cerr << "Warning: Cross-namespace copy may not be supported" << std::endl;
+            std::cerr << "Warning: Cross-namespace copy is enabled but target may not support TP4130" << std::endl;
         }
     }
     
@@ -89,8 +88,17 @@ int main(int argc, char** argv) {
     LbaManager lba_mgr(dst_ns->size_blocks, config.dst_lba_start, dst_lba_end);
     
     // Initialize XCOPY generator
+    bool target_supports_cross_ns = spdk_ctx.supports_cross_namespace_copy();
     XcopyGenerator generator(config.max_ranges, config.src_nsids, 
-                            config.dst_nsid, namespaces);
+                             config.dst_nsid, namespaces,
+                             config.enable_cross_namespace,
+                             target_supports_cross_ns);
+    
+    // Warn if cross-namespace is enabled but target doesn't support it
+    if (config.enable_cross_namespace && !target_supports_cross_ns) {
+        std::cerr << "Warning: Cross-namespace copy is enabled but target may not support TP4130" << std::endl;
+        std::cerr << "         Commands will use format 0 (same-namespace) as fallback" << std::endl;
+    }
     
     // Initialize statistics
     Statistics stats;
