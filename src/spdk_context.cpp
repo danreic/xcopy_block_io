@@ -105,8 +105,7 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     }
     strncpy(trid_.traddr, traddr.c_str(), sizeof(trid_.traddr) - 1);
     
-    if (trsvcid.lenggit add .
-        th() >= sizeof(trid_.trsvcid)) {
+    if (trsvcid.length() >= sizeof(trid_.trsvcid)) {
         std::cerr << "Service ID too long" << std::endl;
         return -1;
     }
