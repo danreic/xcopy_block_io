@@ -128,12 +128,20 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     op.start_time_ns = HighResTimer::now_ns();
     op.user_data = ctx;
     
+    // Get namespace - check for null
+    struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
+    if (!ns) {
+        // Namespace not found - free operation and return
+        op.free_ranges();
+        return 0;
+    }
+    
     // Create copy for callback (SPDK will call callback with this)
     XcopyOperation* op_copy = new XcopyOperation(op);
     
     // Submit XCOPY command
     int rc = spdk_nvme_ns_cmd_copy(
-        ctx->spdk_ctx->get_ns(op.dst_nsid),
+        ns,
         ctx->qpair,
         op.ranges,
         op.num_ranges,

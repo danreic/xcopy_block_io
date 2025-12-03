@@ -112,9 +112,12 @@ uint32_t XcopyGenerator::get_random_src_nsid() {
 
 uint64_t XcopyGenerator::get_ns_size(uint32_t nsid) {
     for (const auto* ns : namespaces_) {
+        if (!ns) {
+            continue; // Skip null namespace pointers
+        }
         // Remove const for SPDK API calls
         struct spdk_nvme_ns* non_const_ns = const_cast<struct spdk_nvme_ns*>(ns);
-        if (ns && spdk_nvme_ns_get_id(non_const_ns) == nsid) {
+        if (spdk_nvme_ns_get_id(non_const_ns) == nsid) {
             return spdk_nvme_ns_get_num_sectors(non_const_ns);
         }
     }
