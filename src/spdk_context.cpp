@@ -86,16 +86,28 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     }
     
     // Initialize SPDK thread library
-    // Use a smaller mempool size to avoid ENOMEM errors
-    // Default is 262143, try 65535 (64K) which should be sufficient
-    // If this still fails, we cannot proceed as threads are required
-    size_t msg_mempool_size = 65535;  // Smaller than default 262143
-    int thread_init_ret = spdk_thread_lib_init_ext(nullptr, nullptr, 0, msg_mempool_size);
+    // Try progressively smaller mempool sizes to avoid ENOMEM errors
+    // Default is 262143, but that's failing. Try much smaller sizes.
+    size_t msg_mempool_sizes[] = {16383, 8191, 4095, 2047, 1023};
+    int thread_init_ret = -1;
+    size_t successful_size = 0;
+    
+    for (size_t i = 0; i < sizeof(msg_mempool_sizes)/sizeof(msg_mempool_sizes[0]); i++) {
+        size_t msg_mempool_size = msg_mempool_sizes[i];
+        thread_init_ret = spdk_thread_lib_init_ext(nullptr, nullptr, 0, msg_mempool_size);
+        if (thread_init_ret == 0) {
+            successful_size = msg_mempool_size;
+            std::cout << "SPDK thread library initialized with mempool size: " 
+                      << successful_size << std::endl;
+            break;
+        }
+    }
+    
     if (thread_init_ret != 0) {
         std::cerr << "Failed to initialize SPDK thread library (err=" << thread_init_ret << ")" << std::endl;
         std::cerr << "Error: Cannot proceed without thread library - threads are required" << std::endl;
-        std::cerr << "Note: This is likely due to DPDK mempool allocation failure" << std::endl;
-        std::cerr << "      Tried mempool size: " << msg_mempool_size << std::endl;
+        std::cerr << "Note: Tried mempool sizes: 16383, 8191, 4095, 2047, 1023 - all failed" << std::endl;
+        std::cerr << "      This indicates a fundamental DPDK mempool allocation issue" << std::endl;
         std::cerr << "      Check hugepages: grep HugePages_Free /proc/meminfo" << std::endl;
         return -1;
     }
