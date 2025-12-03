@@ -66,6 +66,15 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
     uint16_t status_code = cpl->status.sc;
     
     if (spdk_nvme_cpl_is_error(cpl) || status_code != 0) {
+        // Log detailed error information
+        std::cerr << "XCOPY command failed: SCT=" << (int)cpl->status.sct 
+                  << " SC=" << (int)cpl->status.sc 
+                  << " (0x" << std::hex << (int)cpl->status.sc << std::dec << ")"
+                  << " num_ranges=" << op->num_ranges
+                  << " dst_lba=" << op->dst_lba
+                  << " total_blocks=" << op->total_blocks
+                  << std::endl;
+        
         // Record failure
         ctx->stats->record_failure(status_code);
         
@@ -75,7 +84,18 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
             handle_backpressure(ctx, *op);
         }
     } else {
-        // Success - calculate bytes copied
+        // Success - log first few completions for debugging
+        static std::atomic<int> completion_count(0);
+        int count = completion_count.fetch_add(1);
+        if (count < 3) {
+            std::cout << "XCOPY completed successfully #" << (count + 1)
+                      << ": num_ranges=" << op->num_ranges
+                      << ", total_blocks=" << op->total_blocks
+                      << ", latency=" << (latency_ns / 1000) << " us"
+                      << std::endl;
+        }
+        
+        // Calculate bytes copied
         uint64_t bytes = op->total_blocks * 512; // Assume 512-byte blocks for now
         // TODO: Get actual block size from namespace
         
@@ -166,9 +186,22 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     
     if (rc == 0) {
         ctx->outstanding_io++;
+        // Debug: Log first few submissions
+        static std::atomic<int> submission_count(0);
+        int count = submission_count.fetch_add(1);
+        if (count < 3) {
+            std::cout << "Submitted XCOPY #" << (count + 1) 
+                      << ": num_ranges=" << op_copy->num_ranges
+                      << ", dst_lba=" << op_copy->dst_lba
+                      << ", total_blocks=" << op_copy->total_blocks
+                      << std::endl;
+        }
         return 1;
     } else {
-        // Submission failed - handle backpressure
+        // Submission failed - log error
+        std::cerr << "Error: Failed to submit XCOPY command: rc=" << rc 
+                  << " (errno=" << errno << ")" << std::endl;
+        // Handle backpressure
         handle_backpressure(ctx, op);
         delete op_copy; // Clean up op_copy since submission failed
         return 0;
@@ -252,14 +285,20 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     // This is a workaround - we poll the QPair completion queue directly
     int consecutive_errors = 0;
     const int max_consecutive_errors = 10; // Allow some transient errors
+    int submission_count = 0;
     
     while (!ctx->should_stop.load()) {
         // Submit I/O if we have capacity and QPair is still valid
         if (ctx->qpair) {
-            while (ctx->outstanding_io.load() < ctx->target_iodepth) {
+            // Limit initial submissions to 1 to debug the disconnect issue
+            // Once we confirm it works, we can remove this limit
+            int max_initial_submissions = (submission_count == 0) ? 1 : ctx->target_iodepth;
+            
+            while (ctx->outstanding_io.load() < max_initial_submissions) {
                 if (submit_next_io(ctx) == 0) {
                     break;  // No more I/O to submit
                 }
+                submission_count++;
             }
         }
         
@@ -268,6 +307,8 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
             int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
             if (num_completions < 0) {
                 consecutive_errors++;
+                std::cerr << "Warning: QPair poll error (rc=" << num_completions 
+                          << ", consecutive=" << consecutive_errors << ")" << std::endl;
                 if (consecutive_errors >= max_consecutive_errors) {
                     std::cerr << "Error: QPair disconnected after " << consecutive_errors 
                               << " consecutive errors. Continuing to run for full duration..." << std::endl;
@@ -276,6 +317,9 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                     ctx->qpair = nullptr; // Mark QPair as invalid
                 }
             } else {
+                if (consecutive_errors > 0) {
+                    std::cout << "QPair recovered after " << consecutive_errors << " errors" << std::endl;
+                }
                 consecutive_errors = 0; // Reset error counter on success
             }
         } else {
