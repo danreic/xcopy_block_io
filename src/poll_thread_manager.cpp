@@ -260,8 +260,8 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         usleep(100);
     }
     
-    // Cleanup
-    ctx->spdk_ctx->delete_qpair(ctx->qpair);
+    // Cleanup - don't delete QPair here as it's shared across threads
+    // It will be cleaned up in wait() after all threads finish
     ctx->qpair = nullptr;
     ctx->running = false;
 }
@@ -285,8 +285,65 @@ int PollThreadManager::start() {
     // by having each pthread create its own SPDK thread
     // This is not ideal but should work
     
-    // WORKAROUND: Create QPairs serially from main thread before spawning worker threads
-    // This avoids connection failures when multiple threads try to create QPairs simultaneously
+    // WORKAROUND: Create QPairs serially and poll for connection
+    // Without SPDK threads, we need to manually poll the QPair connection
+    // For simplicity in workaround mode, use a single shared QPair for all threads
+    // This avoids connection polling issues
+    
+    struct spdk_nvme_ctrlr* ctrlr = spdk_ctx_->get_ctrlr();
+    if (!ctrlr) {
+        std::cerr << "Error: No controller available" << std::endl;
+        return -1;
+    }
+    
+    // Create a single shared QPair for all threads (workaround mode)
+    spdk_nvme_io_qpair_opts opts;
+    spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+    opts.qprio = SPDK_NVME_QPRIO_URGENT;
+    opts.io_queue_size = iodepth_; // Use full depth for shared QPair
+    
+    struct spdk_nvme_qpair* shared_qpair = spdk_ctx_->create_qpair(iodepth_, &opts);
+    if (!shared_qpair) {
+        std::cerr << "Error: Failed to create shared QPair" << std::endl;
+        return -1;
+    }
+    
+    // Poll the QPair connection until it's ready (workaround for no SPDK threads)
+    // QPair creation is asynchronous and needs polling to establish connection
+    int poll_count = 0;
+    const int max_polls = 5000; // Max 5 seconds of polling
+    bool connected = false;
+    
+    while (poll_count < max_polls) {
+        // Process completions to advance connection state
+        int rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
+        
+        // Check QPair state - if we can process completions without transport errors,
+        // the connection is likely established
+        if (rc >= 0) {
+            // Additional check: try a small delay and poll again
+            usleep(1000); // 1ms
+            rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
+            if (rc >= 0) {
+                connected = true;
+                break;
+            }
+        }
+        
+        usleep(1000); // 1ms delay between polls
+        poll_count++;
+    }
+    
+    if (!connected) {
+        std::cerr << "Warning: QPair connection may not be fully established after " 
+                  << (max_polls * 1000 / 1000000) << " seconds" << std::endl;
+        std::cerr << "         Continuing anyway - connection may establish during I/O" << std::endl;
+    } else {
+        std::cout << "QPair connection established after " << (poll_count * 1000 / 1000) 
+                  << " ms" << std::endl;
+    }
+    
+    // Create threads - all will share the same QPair
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -298,34 +355,17 @@ int PollThreadManager::start() {
         ctx->stats = stats_;
         ctx->should_stop = false;
         ctx->spdk_thread = nullptr; // No SPDK thread in workaround mode
+        ctx->qpair = shared_qpair; // All threads share the same QPair
         
-        // Create QPair serially from main thread (before creating pthread)
-        // This avoids race conditions and connection failures
-        spdk_nvme_io_qpair_opts opts;
-        struct spdk_nvme_ctrlr* ctrlr = spdk_ctx_->get_ctrlr();
-        if (!ctrlr) {
-            std::cerr << "No controller available for thread " << i << std::endl;
-            continue; // Skip this thread
-        }
-        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-        opts.qprio = SPDK_NVME_QPRIO_URGENT;
-        opts.io_queue_size = ctx->target_iodepth;
-        
-        ctx->qpair = spdk_ctx_->create_qpair(ctx->target_iodepth, &opts);
-        if (!ctx->qpair) {
-            std::cerr << "Warning: Failed to create QPair for thread " << i << std::endl;
-            std::cerr << "         This thread will be skipped" << std::endl;
-            continue; // Skip this thread if QPair creation fails
-        }
-        
-        // Create pthread - QPair is already created
+        // Create pthread
         ctx->pthread = new std::thread(thread_func, ctx.get());
         
         threads_.push_back(std::move(ctx));
     }
     
     if (threads_.empty()) {
-        std::cerr << "Error: Failed to create any QPairs" << std::endl;
+        std::cerr << "Error: Failed to create any threads" << std::endl;
+        spdk_ctx_->delete_qpair(shared_qpair);
         return -1;
     }
     
@@ -351,6 +391,15 @@ void PollThreadManager::wait() {
             ctx->pthread->join();
             delete ctx->pthread;
             ctx->pthread = nullptr;
+        }
+    }
+    
+    // Cleanup shared QPair after all threads are done
+    if (!threads_.empty() && threads_[0]->qpair) {
+        spdk_ctx_->delete_qpair(threads_[0]->qpair);
+        // Clear QPair from all contexts
+        for (auto& ctx : threads_) {
+            ctx->qpair = nullptr;
         }
     }
 }
