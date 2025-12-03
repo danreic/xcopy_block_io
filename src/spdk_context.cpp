@@ -85,16 +85,19 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
-    // Try to initialize SPDK thread library
-    // Note: If this fails, we'll try to work around it by not using SPDK threads
-    // and instead using a simpler approach with regular pthreads
-    int thread_init_ret = spdk_thread_lib_init(nullptr, 0);
+    // Initialize SPDK thread library
+    // Use a smaller mempool size to avoid ENOMEM errors
+    // Default is 262143, try 65535 (64K) which should be sufficient
+    // If this still fails, we cannot proceed as threads are required
+    size_t msg_mempool_size = 65535;  // Smaller than default 262143
+    int thread_init_ret = spdk_thread_lib_init_ext(nullptr, nullptr, 0, msg_mempool_size);
     if (thread_init_ret != 0) {
-        std::cerr << "Warning: Failed to initialize SPDK thread library (err=" << thread_init_ret << ")" << std::endl;
-        std::cerr << "Note: This may be due to DPDK mempool allocation issues" << std::endl;
-        std::cerr << "      We will attempt to continue without explicit thread library init" << std::endl;
-        std::cerr << "      Threads may be created on-demand when needed" << std::endl;
-        // Don't return error - let's see if we can create threads without explicit init
+        std::cerr << "Failed to initialize SPDK thread library (err=" << thread_init_ret << ")" << std::endl;
+        std::cerr << "Error: Cannot proceed without thread library - threads are required" << std::endl;
+        std::cerr << "Note: This is likely due to DPDK mempool allocation failure" << std::endl;
+        std::cerr << "      Tried mempool size: " << msg_mempool_size << std::endl;
+        std::cerr << "      Check hugepages: grep HugePages_Free /proc/meminfo" << std::endl;
+        return -1;
     }
     
     // Initialize transport ID for NVMe/TCP
