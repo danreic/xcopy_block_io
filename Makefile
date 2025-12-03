@@ -26,6 +26,7 @@ SPDK_LIBS = -Wl,--start-group \
             -Wl,--whole-archive -lspdk_nvme_no_cuse -Wl,--no-whole-archive \
             -lspdk_sock -lspdk_sock_posix \
             -lspdk_accel -lspdk_event_sock \
+            -lspdk_dma \
             -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
             -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
             -Wl,--end-group \
