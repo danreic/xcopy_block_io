@@ -149,12 +149,31 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     op.start_time_ns = HighResTimer::now_ns();
     op.user_data = ctx;
     
-    // Get namespace - check for null
+    // Get namespace for the command
+    // For format 0 (same namespace), use destination namespace (which is also source)
+    // For format 2 (cross-namespace), we still use destination namespace handle
+    // but source NSIDs are specified in range descriptors
     struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
     if (!ns) {
         // Namespace not found - free operation and return
         op.free_ranges();
         return 0;
+    }
+    
+    // Debug: Log first few operations to verify format
+    static std::atomic<int> debug_count(0);
+    int dbg = debug_count.fetch_add(1);
+    if (dbg < 3 && op.ranges && op.num_ranges > 0) {
+        uint32_t* range_dwords = reinterpret_cast<uint32_t*>(&op.ranges[0]);
+        uint32_t dword1 = range_dwords[1];
+        std::cout << "Debug XCOPY #" << (dbg + 1) 
+                  << ": dst_nsid=" << op.dst_nsid
+                  << ", num_ranges=" << op.num_ranges
+                  << ", range[0] DWORD1=" << dword1
+                  << " (0=format0, >0=format2)"
+                  << ", nlb=" << op.ranges[0].nlb
+                  << ", slba=" << op.ranges[0].slba
+                  << std::endl;
     }
     
     // Create copy for callback (SPDK will call callback with this)

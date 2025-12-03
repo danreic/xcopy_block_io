@@ -144,18 +144,36 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
     op.start_time_ns = 0;
     op.user_data = nullptr;
     
+    // For format 0 (same namespace), all ranges must use the destination namespace
+    // For format 2 (cross-namespace), we can use different source namespaces
+    // Determine which namespace to use for source ranges
+    uint32_t effective_src_nsid = op.dst_nsid; // Default: same as destination (format 0)
+    if (enable_cross_namespace_ && target_supports_cross_namespace_) {
+        // Can use different source namespaces (format 2)
+        effective_src_nsid = get_random_src_nsid();
+    }
+    
+    // Get namespace size for validation
+    uint64_t ns_size = get_ns_size(effective_src_nsid);
+    if (ns_size == 0 || range_size >= ns_size) {
+        return -1; // Invalid namespace or range too large
+    }
+    
+    // Validate range_size is reasonable (max 0xFFFF blocks per range)
+    if (range_size == 0 || range_size > 0x10000) {
+        return -1; // Invalid range size
+    }
+    
     // Generate source ranges
     for (uint32_t i = 0; i < op.num_ranges; i++) {
-        uint32_t src_nsid = get_random_src_nsid();
-        uint64_t ns_size = get_ns_size(src_nsid);
-        
-        if (ns_size == 0 || range_size >= ns_size) {
-            return -1; // Invalid namespace or range too large
-        }
-        
-        // Validate range_size is reasonable (max 0xFFFF blocks per range)
-        if (range_size == 0 || range_size > 0x10000) {
-            return -1; // Invalid range size
+        // For format 2, each range can have a different source NSID
+        uint32_t src_nsid = effective_src_nsid;
+        if (enable_cross_namespace_ && target_supports_cross_namespace_) {
+            src_nsid = get_random_src_nsid();
+            ns_size = get_ns_size(src_nsid);
+            if (ns_size == 0 || range_size >= ns_size) {
+                return -1; // Invalid namespace or range too large
+            }
         }
         
         // Get random source LBA within namespace bounds
@@ -174,17 +192,20 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         // Note: SPDK's spdk_nvme_scc_source_range structure format
         // According to NVMe spec:
         // - Format 0 (same namespace): DWORD 0-1: Reserved (must be 0), DWORD 2-3: Source LBA,
-        //                              DWORD 4: Reserved, DWORD 5: Number of Blocks (0-based)
+        //                              DWORD 4: Reserved, DWORD 5: Number of Blocks (0-based, 16-bit)
         // - Format 2 (cross-namespace): DWORD 0: Reserved, DWORD 1: Source NSID,
         //                               DWORD 2-3: Source LBA, DWORD 4: Reserved,
-        //                               DWORD 5: Number of Blocks (0-based)
+        //                               DWORD 5: Number of Blocks (0-based, 16-bit)
         //
         // SPDK's spdk_nvme_ns_cmd_copy() expects format 0 (same namespace) by default.
         // The namespace handle passed to the function is the source namespace.
         // For format 2 (cross-namespace), we need to set the source NSID in DWORD 1.
         memset(&op.ranges[i], 0, sizeof(op.ranges[i]));
         op.ranges[i].slba = src_lba;
-        op.ranges[i].nlb = range_size - 1; // 0-based (0 = 1 block, 2047 = 2048 blocks)
+        
+        // nlb is 16-bit (0-based), so ensure we don't exceed 0xFFFF
+        uint16_t nlb_value = (range_size > 0x10000) ? 0xFFFF : (range_size - 1);
+        op.ranges[i].nlb = nlb_value; // 0-based (0 = 1 block, 2047 = 2048 blocks)
         op.ranges[i].eilbrt = 0; // Expected initial logical block reference tag
         op.ranges[i].elbatm = 0; // Expected LBA application tag mask
         op.ranges[i].elbat = 0;  // Expected LBA application tag
@@ -200,7 +221,8 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         }
         // If use_format2 is false, DWORD 1 remains 0 (format 0, same-namespace)
         
-        op.total_blocks += range_size;
+        // Update total_blocks with actual blocks (nlb + 1)
+        op.total_blocks += (nlb_value + 1);
     }
     
     return 0;
