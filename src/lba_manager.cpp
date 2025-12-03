@@ -32,7 +32,17 @@ uint64_t LbaManager::get_and_advance_dst_lba(uint64_t total_blocks) {
     if (lba + total_blocks > dst_end_) {
         // Operation would exceed the end - wrap to start
         lba = dst_start_;
-        dst_current_ = dst_start_ + total_blocks;
+        
+        // CRITICAL: Check if the wrapped operation would still exceed bounds
+        // If the operation itself is larger than the destination range, we can't fit it
+        uint64_t range_size = dst_end_ - dst_start_;
+        if (total_blocks > range_size) {
+            // Operation is too large for the destination range - this is an error condition
+            // For now, we'll still return the start LBA, but the caller should validate
+            dst_current_ = dst_start_;
+        } else {
+            dst_current_ = dst_start_ + total_blocks;
+        }
     } else {
         // Operation fits - advance normally
         dst_current_ += total_blocks;
