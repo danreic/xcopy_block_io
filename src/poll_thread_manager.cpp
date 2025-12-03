@@ -208,9 +208,8 @@ int PollThreadManager::poller_func(void* arg) {
 }
 
 void PollThreadManager::thread_func(PollThreadContext* ctx) {
-    if (!ctx || !ctx->spdk_thread) {
-        std::cerr << "Error: Invalid context or SPDK thread not created for thread " 
-                  << (ctx ? ctx->thread_id : 0) << std::endl;
+    if (!ctx) {
+        std::cerr << "Error: Invalid context for thread" << std::endl;
         return;
     }
     
@@ -223,7 +222,23 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                   << ctx->thread_id << std::endl;
     }
     
-    // Switch to the pre-created SPDK thread
+    // Create SPDK thread for this pthread
+    // The first thread created will automatically initialize the thread library
+    char name[64];
+    snprintf(name, sizeof(name), "xload_thread_%u", ctx->thread_id);
+    
+    // Try to create the thread directly
+    // According to SPDK docs, the first thread created will be the "app thread"
+    // and will auto-initialize the thread library
+    ctx->spdk_thread = spdk_thread_create(name, nullptr);
+    
+    if (!ctx->spdk_thread) {
+        std::cerr << "Failed to create SPDK thread " << ctx->thread_id << std::endl;
+        std::cerr << "Error: spdk_thread_create failed - thread library may not be initialized" << std::endl;
+        return;
+    }
+    
+    // Switch to our SPDK thread
     spdk_set_thread(ctx->spdk_thread);
     
     // Create QPair (dedicated to this thread)
@@ -281,25 +296,20 @@ int PollThreadManager::start() {
     threads_.clear();
     threads_.reserve(num_cores_);
     
-    // Check if we're in an SPDK thread context - if not, create a main thread first
-    // SPDK threads can only be created from within an SPDK thread context
-    struct spdk_thread* main_thread = spdk_get_thread();
-    bool created_main_thread = false;
+    // Check if we're in an SPDK thread context
+    // After spdk_env_init(), we should be able to create threads directly
+    // without explicit thread library initialization
+    struct spdk_thread* current_thread = spdk_get_thread();
     
-    if (!main_thread) {
-        // Not in an SPDK thread - create a main thread first
-        // This is required because spdk_thread_create needs a thread context
-        main_thread = spdk_thread_create("xload_main", nullptr);
-        if (!main_thread) {
-            std::cerr << "Failed to create main SPDK thread" << std::endl;
-            std::cerr << "Error: Cannot create SPDK threads without thread context" << std::endl;
-            return -1;
-        }
-        spdk_set_thread(main_thread);
-        created_main_thread = true;
-    }
+    // If we're not in a thread context, we need to create one first
+    // However, spdk_thread_create requires being in a thread context
+    // So we'll use a workaround: create threads from within the pthreads
+    // by having each pthread create its own SPDK thread
+    // This is not ideal but should work
     
-    // Now create worker SPDK threads from the main thread context
+    // Create pthreads - each will create its own SPDK thread
+    // This avoids the chicken-and-egg problem of needing a thread context
+    // to create threads
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -310,21 +320,9 @@ int PollThreadManager::start() {
         ctx->range_size = range_size_;
         ctx->stats = stats_;
         ctx->should_stop = false;
+        ctx->spdk_thread = nullptr; // Will be created in thread_func
         
-        char name[64];
-        snprintf(name, sizeof(name), "xload_thread_%u", i);
-        ctx->spdk_thread = spdk_thread_create(name, nullptr);
-        
-        if (!ctx->spdk_thread) {
-            std::cerr << "Failed to create SPDK thread " << i << std::endl;
-            // Cleanup main thread if we created it
-            if (created_main_thread && main_thread) {
-                spdk_thread_exit(main_thread);
-            }
-            return -1;
-        }
-        
-        // Create pthread that will use this SPDK thread
+        // Create pthread - it will create its own SPDK thread
         ctx->pthread = new std::thread(thread_func, ctx.get());
         
         threads_.push_back(std::move(ctx));
