@@ -271,6 +271,27 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         return -1;
     }
     
+    // CRITICAL: Check for source/destination overlap in same-namespace copy
+    // Many NVMe implementations reject XCOPY when source and destination ranges overlap
+    // in the same namespace (this can cause data corruption)
+    uint64_t dst_end = op.dst_lba + op.total_blocks;
+    for (uint32_t i = 0; i < op.num_ranges; i++) {
+        uint64_t src_lba = op.ranges[i].slba;
+        uint64_t src_blocks = op.ranges[i].nlb + 1;
+        uint64_t src_end = src_lba + src_blocks;
+        
+        // Check if source range overlaps with destination range
+        // Overlap occurs if: src_lba < dst_end && src_end > op.dst_lba
+        if (src_lba < dst_end && src_end > op.dst_lba) {
+            // Overlap detected - regenerate this operation
+            // This is a common issue in same-namespace copy workloads
+            std::cerr << "WARNING: Source/destination overlap detected, regenerating operation: "
+                      << "src_lba=" << src_lba << "-" << src_end
+                      << " overlaps with dst_lba=" << op.dst_lba << "-" << dst_end << std::endl;
+            return -1; // Signal to caller to regenerate
+        }
+    }
+    
     return 0;
 }
 

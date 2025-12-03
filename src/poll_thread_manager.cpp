@@ -153,10 +153,17 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
         // Fall through to generate new operation
     }
     
-    // Generate new operation
+    // Generate new operation (retry up to 10 times to avoid overlap)
     XcopyOperation op;
-    if (ctx->generator->generate(op, *ctx->lba_mgr, ctx->range_size) != 0) {
-        return 0;
+    int retry_count = 0;
+    const int max_retries = 10;
+    while (ctx->generator->generate(op, *ctx->lba_mgr, ctx->range_size) != 0) {
+        retry_count++;
+        if (retry_count >= max_retries) {
+            // Too many retries - likely a persistent issue (e.g., namespace too small)
+            return 0;
+        }
+        // Retry with new random source LBAs
     }
     
     // Allocate ranges buffer
