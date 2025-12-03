@@ -72,8 +72,27 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
                   << " (0x" << std::hex << (int)cpl->status.sc << std::dec << ")"
                   << " num_ranges=" << op->num_ranges
                   << " dst_lba=" << op->dst_lba
-                  << " total_blocks=" << op->total_blocks
-                  << std::endl;
+                  << " total_blocks=" << op->total_blocks;
+        
+        // Log first range details for debugging
+        if (op->ranges && op->num_ranges > 0) {
+            std::cerr << " first_range: src_lba=" << op->ranges[0].slba
+                      << " nlb=" << op->ranges[0].nlb
+                      << " (actual_blocks=" << (op->ranges[0].nlb + 1) << ")";
+        }
+        
+        // Check if destination LBA + total_blocks exceeds namespace
+        if (ctx->spdk_ctx) {
+            const NamespaceInfo* ns_info = ctx->spdk_ctx->get_ns_info(op->dst_nsid);
+            if (ns_info) {
+                uint64_t dst_end = op->dst_lba + op->total_blocks;
+                std::cerr << " dst_ns_size=" << ns_info->size_blocks
+                          << " dst_end=" << dst_end
+                          << " (exceeds=" << (dst_end > ns_info->size_blocks ? "YES" : "NO") << ")";
+            }
+        }
+        
+        std::cerr << std::endl;
         
         // Record failure
         ctx->stats->record_failure(status_code);
