@@ -19,9 +19,11 @@ LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/l
 
 # SPDK libraries (link statically for better performance)
 # Use --start-group/--end-group to handle circular dependencies
+# Use --whole-archive for nvme library to ensure TCP transport constructor runs
 # Order: libraries that need symbols come first, providers come later
 SPDK_LIBS = -Wl,--start-group \
-            -lspdk_nvme -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
+            -Wl,--whole-archive -lspdk_nvme -Wl,--no-whole-archive \
+            -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
             -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
             -Wl,--end-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
