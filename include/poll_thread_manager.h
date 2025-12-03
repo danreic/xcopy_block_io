@@ -106,6 +106,7 @@ private:
     static struct spdk_nvme_qpair* shared_qpair_;
     static std::mutex qpair_mutex_;
     static uint32_t actual_qpair_depth_;
+};
 
 } // namespace xload
 
