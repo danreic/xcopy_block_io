@@ -69,7 +69,7 @@ check-libs:
 # Link with SPDK libraries (static linking preferred)
 $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJECTS) $(LIBPATHS) $(LIBS) $(LDFLAGS) \
-		-Wl,--as-needed \
+		-Wl,--no-as-needed \
 		-Wl,-rpath,$(SPDK_LIB):/usr/lib:/usr/lib64:/usr/local/lib:/usr/local/lib64 \
 		-Wl,--disable-new-dtags
 

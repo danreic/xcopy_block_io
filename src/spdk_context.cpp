@@ -3,7 +3,6 @@
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 
 namespace xload {
 
@@ -102,11 +101,23 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
+    // Check if transport is registered/available
+    // In SPDK, transports should be auto-registered, but we'll verify
+    if (!spdk_nvme_transport_available(SPDK_NVME_TRANSPORT_TCP)) {
+        std::cerr << "Error: NVMe/TCP transport is not registered" << std::endl;
+        std::cerr << "Note: The transport may need to be explicitly registered" << std::endl;
+        std::cerr << "      or SPDK may need to be rebuilt with TCP support" << std::endl;
+        return -1;
+    }
+    
     // Probe and attach using standard API
     if (spdk_nvme_probe(&trid_, this, probe_cb, attach_cb, nullptr) != 0) {
         std::cerr << "Failed to probe for NVMe controllers" << std::endl;
         std::cerr << "Transport: " << tcp_name << std::endl;
         std::cerr << "Address: " << traddr << ":" << trsvcid << std::endl;
+        if (!subnqn.empty()) {
+            std::cerr << "Subsystem NQN: " << subnqn << std::endl;
+        }
         return -1;
     }
     
