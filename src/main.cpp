@@ -81,19 +81,9 @@ int main(int argc, char** argv) {
     }
     
     // Initialize LBA manager
-    // Limit destination range to avoid target restrictions on XCOPY LBAs
-    // Many targets have limitations on which LBAs can be used for XCOPY
     uint64_t dst_lba_end = config.dst_lba_end;
     if (dst_lba_end == 0) {
-        // Default to first 100GB (209715200 blocks at 512B/block) to avoid target restrictions
-        // This is a safe default that should work with most targets
-        uint64_t safe_limit = 209715200ULL; // 100GB
-        dst_lba_end = (dst_ns->size_blocks > safe_limit) ? safe_limit : dst_ns->size_blocks;
-        if (config.verbose) {
-            std::cout << "Note: Limiting destination range to " << dst_lba_end 
-                      << " blocks (" << (dst_lba_end * 512 / 1024 / 1024 / 1024) 
-                      << " GB) to avoid target XCOPY restrictions" << std::endl;
-        }
+        dst_lba_end = dst_ns->size_blocks;
     }
     LbaManager lba_mgr(dst_ns->size_blocks, config.dst_lba_start, dst_lba_end);
     
