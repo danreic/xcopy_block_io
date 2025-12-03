@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace xload {
 
@@ -51,6 +52,7 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Initialize SPDK environment
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
+    opts.opts_size = sizeof(opts);  // CRITICAL: Must be set after init
     opts.name = "x-load";
     opts.shm_id = 0;
     
@@ -92,9 +94,19 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         strncpy(trid_.subnqn, subnqn.c_str(), sizeof(trid_.subnqn) - 1);
     }
     
-    // Probe and attach
+    // Check if TCP transport is available
+    const char* tcp_name = spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_TCP);
+    if (!tcp_name || strcmp(tcp_name, "Unknown") == 0) {
+        std::cerr << "Error: NVMe/TCP transport is not available" << std::endl;
+        std::cerr << "Note: Ensure SPDK was built with NVMe/TCP transport support" << std::endl;
+        return -1;
+    }
+    
+    // Probe and attach using standard API
     if (spdk_nvme_probe(&trid_, this, probe_cb, attach_cb, nullptr) != 0) {
         std::cerr << "Failed to probe for NVMe controllers" << std::endl;
+        std::cerr << "Transport: " << tcp_name << std::endl;
+        std::cerr << "Address: " << traddr << ":" << trsvcid << std::endl;
         return -1;
     }
     
