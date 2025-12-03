@@ -208,7 +208,9 @@ int PollThreadManager::poller_func(void* arg) {
 }
 
 void PollThreadManager::thread_func(PollThreadContext* ctx) {
-    if (!ctx) {
+    if (!ctx || !ctx->spdk_thread) {
+        std::cerr << "Error: Invalid context or SPDK thread not created for thread " 
+                  << (ctx ? ctx->thread_id : 0) << std::endl;
         return;
     }
     
@@ -221,17 +223,7 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                   << ctx->thread_id << std::endl;
     }
     
-    // Create SPDK thread
-    char name[64];
-    snprintf(name, sizeof(name), "xload_thread_%u", ctx->thread_id);
-    ctx->spdk_thread = spdk_thread_create(name, nullptr);
-    
-    if (!ctx->spdk_thread) {
-        std::cerr << "Failed to create SPDK thread " << ctx->thread_id << std::endl;
-        return;
-    }
-    
-    // Switch to SPDK thread
+    // Switch to the pre-created SPDK thread
     spdk_set_thread(ctx->spdk_thread);
     
     // Create QPair (dedicated to this thread)
@@ -289,6 +281,8 @@ int PollThreadManager::start() {
     threads_.clear();
     threads_.reserve(num_cores_);
     
+    // Create SPDK threads first (must be done from main SPDK context)
+    // SPDK threads cannot be created from regular pthreads
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -300,7 +294,18 @@ int PollThreadManager::start() {
         ctx->stats = stats_;
         ctx->should_stop = false;
         
-        // Create thread
+        // Create SPDK thread from main context (before creating pthread)
+        // This must be done from an SPDK thread context, which the main thread is
+        char name[64];
+        snprintf(name, sizeof(name), "xload_thread_%u", i);
+        ctx->spdk_thread = spdk_thread_create(name, nullptr);
+        
+        if (!ctx->spdk_thread) {
+            std::cerr << "Failed to create SPDK thread " << i << std::endl;
+            return -1;
+        }
+        
+        // Create pthread that will use this SPDK thread
         ctx->pthread = new std::thread(thread_func, ctx.get());
         
         threads_.push_back(std::move(ctx));
