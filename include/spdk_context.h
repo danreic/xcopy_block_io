@@ -2,6 +2,7 @@
 #define SPDK_CONTEXT_H
 
 #include <spdk/nvme.h>
+#include <spdk/nvmf_spec.h>
 #include <spdk/env.h>
 #include <spdk/thread.h>
 #include <stdint.h>

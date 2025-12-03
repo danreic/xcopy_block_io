@@ -71,6 +71,7 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
     trid_.trtype = SPDK_NVME_TRANSPORT_TCP;
+    trid_.adrfam = SPDK_NVMF_ADRFAM_IPV4;  // Set address family to IPv4
     
     if (traddr.length() >= sizeof(trid_.traddr)) {
         std::cerr << "Transport address too long" << std::endl;
