@@ -33,7 +33,7 @@ SPDK_LIBS = -Wl,--start-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
             -lrte_cmdline -lrte_kvargs -lrte_hash -lrte_meter \
-            -lisal -Wl,--undefined=spdk_nvme_transport_register
+            -lisal -lisal_crypto -Wl,--undefined=spdk_nvme_transport_register
 
 # JSON library (nlohmann/json header-only, or use pkg-config if installed)
 JSON_INCLUDE = -I/usr/include/nlohmann
