@@ -3,6 +3,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h> // For ENXIO, ENODEV
 
 namespace xload {
 
@@ -297,58 +298,108 @@ int PollThreadManager::start() {
     }
     
     // Create a single shared QPair for all threads (workaround mode)
+    // Get controller's maximum queue depth capability
+    const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr);
+    uint32_t max_queue_depth = cdata->maxcmd; // Maximum number of commands per queue
+    
+    // Use the minimum of requested depth and controller's maximum
+    // This ensures we don't exceed the server's capabilities
+    uint32_t qpair_depth = iodepth_;
+    if (qpair_depth > max_queue_depth) {
+        std::cout << "Note: Requested queue depth (" << iodepth_ 
+                  << ") exceeds controller maximum (" << max_queue_depth << ")" << std::endl;
+        std::cout << "      Using maximum supported depth: " << max_queue_depth << std::endl;
+        qpair_depth = max_queue_depth;
+    }
+    
+    // Also check for reasonable upper limit (some controllers report very high values)
+    // Cap at 1024 as a practical limit for most NVMe/TCP targets
+    if (qpair_depth > 1024) {
+        std::cout << "Note: Controller reports very high queue depth (" << max_queue_depth 
+                  << "), capping at 1024 for practical purposes" << std::endl;
+        qpair_depth = 1024;
+    }
+    
     spdk_nvme_io_qpair_opts opts;
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
     opts.qprio = SPDK_NVME_QPRIO_URGENT;
-    opts.io_queue_size = iodepth_; // Use full depth for shared QPair
+    opts.io_queue_size = qpair_depth;
     
-    struct spdk_nvme_qpair* shared_qpair = spdk_ctx_->create_qpair(iodepth_, &opts);
+    std::cout << "Creating shared QPair with queue depth: " << qpair_depth << std::endl;
+    struct spdk_nvme_qpair* shared_qpair = spdk_ctx_->create_qpair(qpair_depth, &opts);
     if (!shared_qpair) {
-        std::cerr << "Error: Failed to create shared QPair" << std::endl;
+        std::cerr << "Error: Failed to create shared QPair with depth " << qpair_depth << std::endl;
+        std::cerr << "       Try reducing --iodepth (e.g., 256 or 128)" << std::endl;
         return -1;
     }
     
-    // Poll the QPair connection until it's ready (workaround for no SPDK threads)
-    // QPair creation is asynchronous and needs polling to establish connection
+    // CRITICAL: QPair creation is asynchronous for NVMe/TCP
+    // We MUST poll the QPair to establish the connection
+    // Without SPDK threads, we need to poll manually from the main thread
+    std::cout << "Polling QPair connection..." << std::endl;
     int poll_count = 0;
-    const int max_polls = 5000; // Max 5 seconds of polling
+    const int max_polls = 10000; // Max 10 seconds of polling (10000 * 1ms)
     bool connected = false;
     
     while (poll_count < max_polls) {
         // Process completions to advance connection state
+        // This is critical - the connection won't establish without polling
         int rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
         
-        // Check QPair state - if we can process completions without transport errors,
-        // the connection is likely established
+        // Negative return means error or connection not ready yet
+        // Zero or positive means we processed completions (connection may be ready)
         if (rc >= 0) {
-            // Additional check: try a small delay and poll again
-            usleep(1000); // 1ms
+            // Connection might be ready - verify by checking if we can process more
+            // without errors
+            usleep(100); // Small delay
             rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
             if (rc >= 0) {
+                // Connection appears established
                 connected = true;
                 break;
             }
+        } else if (rc == -ENXIO || rc == -ENODEV) {
+            // These errors suggest connection failed permanently
+            std::cerr << "Error: QPair connection failed permanently (rc=" << rc << ")" << std::endl;
+            spdk_ctx_->delete_qpair(shared_qpair);
+            return -1;
         }
         
+        // Connection still establishing - continue polling
         usleep(1000); // 1ms delay between polls
         poll_count++;
+        
+        // Print progress every second
+        if (poll_count % 1000 == 0) {
+            std::cout << "  Still connecting... (" << (poll_count / 1000) << "s)" << std::endl;
+        }
     }
     
     if (!connected) {
-        std::cerr << "Warning: QPair connection may not be fully established after " 
-                  << (max_polls * 1000 / 1000000) << " seconds" << std::endl;
-        std::cerr << "         Continuing anyway - connection may establish during I/O" << std::endl;
-    } else {
-        std::cout << "QPair connection established after " << (poll_count * 1000 / 1000) 
-                  << " ms" << std::endl;
+        std::cerr << "Error: QPair connection failed to establish after " 
+                  << (max_polls / 1000) << " seconds" << std::endl;
+        std::cerr << "       This may indicate:" << std::endl;
+        std::cerr << "       - Target is not accepting connections" << std::endl;
+        std::cerr << "       - Queue depth too high (try --iodepth 128 or 256)" << std::endl;
+        std::cerr << "       - Network connectivity issues" << std::endl;
+        spdk_ctx_->delete_qpair(shared_qpair);
+        return -1;
     }
+    
+    std::cout << "QPair connection established after " << (poll_count * 1000 / 1000) 
+              << " ms" << std::endl;
+    
+    // Store the actual QPair depth for later use
+    uint32_t actual_qpair_depth = qpair_depth;
     
     // Create threads - all will share the same QPair
     for (uint32_t i = 0; i < num_cores_; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
         ctx->spdk_ctx = spdk_ctx_;
-        ctx->target_iodepth = iodepth_ / num_cores_; // Distribute depth across threads
+        // Distribute the actual QPair depth across threads (not the requested depth)
+        // This ensures we don't try to submit more I/O than the QPair can handle
+        ctx->target_iodepth = actual_qpair_depth / num_cores_;
         ctx->generator = generator_;
         ctx->lba_mgr = lba_mgr_;
         ctx->range_size = range_size_;
