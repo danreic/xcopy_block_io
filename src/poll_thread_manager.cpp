@@ -138,18 +138,31 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     }
     
     // Create copy for callback (SPDK will call callback with this)
+    // The callback will receive op_copy, so we need to ensure op_copy has valid ranges
     XcopyOperation* op_copy = new XcopyOperation(op);
     
-    // Submit XCOPY command
+    // Verify op_copy has valid ranges
+    if (!op_copy->ranges || op_copy->num_ranges != op.num_ranges) {
+        std::cerr << "Error: Failed to copy operation ranges" << std::endl;
+        delete op_copy;
+        op.free_ranges();
+        return 0;
+    }
+    
+    // Submit XCOPY command using op_copy's ranges (which will be valid in callback)
+    // SPDK will copy the ranges data into the command, so we can use op_copy's ranges
     int rc = spdk_nvme_ns_cmd_copy(
         ns,
         ctx->qpair,
-        op.ranges,
-        op.num_ranges,
-        op.dst_lba,
+        op_copy->ranges,  // Use op_copy's ranges, not op's (callback will receive op_copy)
+        op_copy->num_ranges,
+        op_copy->dst_lba,
         xcopy_complete_cb,
         op_copy // Callback will free this
     );
+    
+    // Free original op's ranges since we're using op_copy's ranges
+    op.free_ranges();
     
     if (rc == 0) {
         ctx->outstanding_io++;
@@ -157,7 +170,7 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     } else {
         // Submission failed - handle backpressure
         handle_backpressure(ctx, op);
-        op.free_ranges();
+        delete op_copy; // Clean up op_copy since submission failed
         return 0;
     }
 }
@@ -413,6 +426,18 @@ int PollThreadManager::start() {
     
     std::cout << "QPair connection established after " << (poll_count * 1000 / 1000) 
               << " ms" << std::endl;
+    
+    // CRITICAL: Wait a bit more and poll a few times to ensure QPair is fully ready
+    // Sometimes the connection appears established but isn't ready for I/O yet
+    std::cout << "Verifying QPair is ready for I/O..." << std::endl;
+    for (int i = 0; i < 100; i++) {
+        int rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
+        if (rc < 0 && rc != -ENXIO && rc != -ENODEV) {
+            // Transient error - continue polling
+        }
+        usleep(1000); // 1ms
+    }
+    std::cout << "QPair ready for I/O" << std::endl;
     
     // Store the actual QPair depth for later use
     uint32_t actual_qpair_depth = qpair_depth;
