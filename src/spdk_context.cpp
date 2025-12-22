@@ -69,6 +69,7 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Initialize SPDK environment with minimal options (matching SPDK tools)
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
+    opts.opts_size = sizeof(opts);
     opts.name = "x-load";
     
     // Initialize environment
