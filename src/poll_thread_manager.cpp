@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <errno.h> // For ENXIO, ENODEV
+#include <chrono>  // For keep-alive timing
 
 namespace xload {
 
@@ -417,7 +418,20 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     const int max_consecutive_errors = 10; // Allow some transient errors
     int submission_count = 0;
     
+    // Keep-alive: periodically poll admin queue to handle keep-alive commands
+    auto last_admin_poll = std::chrono::steady_clock::now();
+    const auto admin_poll_interval = std::chrono::milliseconds(1000); // Poll admin every 1 second
+    
     while (!ctx->should_stop.load()) {
+        // Poll admin queue for keep-alive (required by NVMe-oF)
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_admin_poll >= admin_poll_interval) {
+            struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
+            if (ctrlr) {
+                spdk_nvme_ctrlr_process_admin_completions(ctrlr);
+            }
+            last_admin_poll = now;
+        }
         // Submit I/O if we have capacity and QPair is still valid
         if (ctx->qpair) {
             // Limit initial submissions to 1 to debug the disconnect issue
