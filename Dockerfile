@@ -4,7 +4,8 @@
 # =============================================================================
 # Stage 1: Build SPDK
 # =============================================================================
-FROM ubuntu:22.04 AS spdk-builder
+# Use AWS ECR public mirror to avoid Docker Hub rate limits
+FROM public.ecr.aws/ubuntu/ubuntu:22.04 AS spdk-builder
 
 # Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -104,7 +105,7 @@ RUN mkdir -p /spdk-install/usr/local/spdk/lib && \
 # =============================================================================
 # Stage 2: Build x-load
 # =============================================================================
-FROM ubuntu:22.04 AS builder
+FROM public.ecr.aws/ubuntu/ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -151,7 +152,7 @@ RUN make SPDK_ROOT=/usr/local/spdk || \
 # =============================================================================
 # Stage 3: Runtime image (minimal)
 # =============================================================================
-FROM ubuntu:22.04 AS runtime
+FROM public.ecr.aws/ubuntu/ubuntu:22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 

@@ -4,7 +4,8 @@
 # Build: docker build -f Dockerfile.dev -t x-load:dev .
 # Run:   docker run -it --privileged -v /dev/hugepages:/dev/hugepages x-load:dev bash
 
-FROM ubuntu:22.04
+# Use AWS ECR public mirror to avoid Docker Hub rate limits
+FROM public.ecr.aws/ubuntu/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
