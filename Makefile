@@ -92,10 +92,10 @@ $(NVME_LIB_TMP):
 		echo "Error: Cannot find libspdk_nvme.a. Check SPDK_ROOT (currently: $(SPDK_ROOT))"; \
 		exit 1; \
 	fi
-	@echo "Creating nvme library without CUSE from $(NVME_LIB_SRC)..."
+	@echo "Creating nvme library without CUSE/VFIO-USER from $(NVME_LIB_SRC)..."
 	@mkdir -p /tmp/spdk_nvme_extract
 	@cd /tmp/spdk_nvme_extract && ar x $(NVME_LIB_SRC)
-	@cd /tmp/spdk_nvme_extract && rm -f nvme_cuse.o 2>/dev/null || true
+	@cd /tmp/spdk_nvme_extract && rm -f nvme_cuse.o nvme_vfio_user.o 2>/dev/null || true
 	@ar rcs $(NVME_LIB_TMP) /tmp/spdk_nvme_extract/*.o
 	@rm -rf /tmp/spdk_nvme_extract
 	@echo "Created $(NVME_LIB_TMP)"
