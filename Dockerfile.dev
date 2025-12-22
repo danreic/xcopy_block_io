@@ -81,6 +81,7 @@ RUN ldconfig && \
     ./configure \
         --disable-tests \
         --disable-unit-tests \
+        --disable-examples \
         --without-fuse \
         --without-rbd \
         --without-iscsi-initiator \
@@ -92,6 +93,7 @@ RUN ldconfig && \
         --without-ublk \
         --without-nvme-cuse \
         --without-uring \
+        --without-rdma \
         --prefix=/usr/local/spdk && \
     make -j$(nproc) && \
     make install
@@ -106,8 +108,6 @@ ENV SPDK_ROOT=/usr/local/spdk
 # SPDK/DPDK environment variables for container operation
 # Force POSIX socket implementation (most compatible in Docker)
 ENV SPDK_SOCK_IMPL_DEFAULT=posix
-# DPDK EAL options for containers (no PCI, virtual address IOVA)
-ENV DPDK_EAL_ARGS="--no-pci --iova-mode=va"
 
 # Create working directory for x-load
 WORKDIR /app
@@ -118,18 +118,12 @@ COPY . .
 # Build x-load
 RUN make SPDK_ROOT=/usr/local/spdk
 
-# Create wrapper scripts for SPDK tools to run in container mode
-RUN echo '#!/bin/bash\n\
-# Run SPDK tools with container-friendly options\n\
-exec "$@" --no-pci\n\
-' > /usr/local/bin/spdk-container-run && chmod +x /usr/local/bin/spdk-container-run
-
 # Create a helper script to test SPDK connectivity
 RUN echo '#!/bin/bash\n\
 echo "Testing SPDK TCP connectivity..."\n\
 echo "Target: $1:$2"\n\
 echo ""\n\
-/opt/spdk/build/bin/spdk_nvme_discover --no-pci -r "trtype:TCP adrfam:IPv4 traddr:$1 trsvcid:$2 hostnqn:$3"\n\
+/opt/spdk/build/bin/spdk_nvme_discover -r "trtype:TCP adrfam:IPv4 traddr:$1 trsvcid:$2" -H "$3"\n\
 ' > /usr/local/bin/test-spdk-tcp && chmod +x /usr/local/bin/test-spdk-tcp
 
 # Show some info on container start
