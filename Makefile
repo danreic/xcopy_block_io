@@ -34,8 +34,7 @@ SPDK_KEYRING_LIBS = $(if $(filter yes,$(SPDK_HAS_KEYRING)),-lspdk_keyring -lspdk
 SPDK_DMA_LIBS = $(if $(filter yes,$(SPDK_HAS_DMA)),-lspdk_dma,)
 
 SPDK_LIBS = -Wl,--start-group \
-            -Wl,--whole-archive -lspdk_nvme_no_cuse -Wl,--no-whole-archive \
-            -lspdk_sock -lspdk_sock_posix \
+            -Wl,--whole-archive -lspdk_nvme_no_cuse -lspdk_sock -lspdk_sock_posix -Wl,--no-whole-archive \
             -lspdk_accel -lspdk_event_sock \
             $(SPDK_DMA_LIBS) \
             -lspdk_thread -lspdk_trace $(SPDK_KEYRING_LIBS) \
