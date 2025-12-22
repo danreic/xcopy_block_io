@@ -91,7 +91,14 @@ uint64_t LbaManager::get_random_src_lba(uint64_t range_size) {
         return 0;
     }
     
-    uint64_t max_lba = namespace_size_ - range_size;
+    // Limit source LBAs to first 90% of namespace to avoid edge cases
+    // Some targets may have issues with reads near the end of the namespace
+    uint64_t safe_namespace_size = (namespace_size_ * 90) / 100;
+    if (safe_namespace_size < range_size) {
+        safe_namespace_size = namespace_size_;  // Fallback if namespace is tiny
+    }
+    
+    uint64_t max_lba = safe_namespace_size - range_size;
     std::uniform_int_distribution<uint64_t> dist(0, max_lba);
     
     return dist(rng_);

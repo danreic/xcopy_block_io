@@ -463,8 +463,8 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         } else {
             // QPair is disconnected - attempt to reconnect
             static int reconnect_attempts = 0;
-            static const int max_reconnect_attempts = 5;
-            static const int reconnect_delay_ms = 2000;
+            static const int max_reconnect_attempts = 10;
+            static const int reconnect_delay_ms = 5000;  // 5 seconds between attempts
             
             if (reconnect_attempts < max_reconnect_attempts) {
                 reconnect_attempts++;
