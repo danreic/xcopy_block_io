@@ -1,0 +1,112 @@
+# Dockerfile.dev - Single-stage development image for x-load
+# Use this for debugging or when you need a shell inside the container
+# 
+# Build: docker build -f Dockerfile.dev -t x-load:dev .
+# Run:   docker run -it --privileged -v /dev/hugepages:/dev/hugepages x-load:dev bash
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install all dependencies
+RUN apt-get update && apt-get install -y \
+    # Build essentials
+    build-essential \
+    git \
+    pkg-config \
+    python3 \
+    python3-pip \
+    python3-pyelftools \
+    python3-setuptools \
+    meson \
+    ninja-build \
+    autoconf \
+    automake \
+    libtool \
+    nasm \
+    # SPDK/DPDK dependencies
+    libnuma-dev \
+    libssl-dev \
+    libaio-dev \
+    liburing-dev \
+    uuid-dev \
+    libncurses-dev \
+    libjson-c-dev \
+    libarchive-dev \
+    libibverbs-dev \
+    librdmacm-dev \
+    # x-load dependencies
+    nlohmann-json3-dev \
+    # Utilities
+    vim \
+    gdb \
+    strace \
+    pciutils \
+    kmod \
+    curl \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip3 install meson ninja pyelftools grpcio grpcio-tools
+
+# Clone and build SPDK
+WORKDIR /opt
+RUN git clone --depth 1 --branch v24.01.x https://github.com/spdk/spdk.git
+
+WORKDIR /opt/spdk
+RUN git submodule update --init --recursive
+
+# Build isa-l
+WORKDIR /opt/spdk/isa-l
+RUN ./autogen.sh && \
+    ./configure --prefix=/usr/local && \
+    make -j$(nproc) && \
+    make install
+
+# Build isa-l_crypto if present
+WORKDIR /opt/spdk
+RUN if [ -d "isa-l-crypto" ]; then \
+        cd isa-l-crypto && \
+        ./autogen.sh && \
+        ./configure --prefix=/usr/local && \
+        make -j$(nproc) && \
+        make install; \
+    fi
+
+# Configure and build SPDK
+WORKDIR /opt/spdk
+RUN ldconfig && \
+    ./configure \
+        --without-fuse \
+        --without-rbd \
+        --without-iscsi-initiator \
+        --without-vtune \
+        --without-vhost \
+        --without-virtio \
+        --without-pmdk \
+        --without-xnvme \
+        --without-usdt \
+        --prefix=/usr/local/spdk && \
+    make -j$(nproc) && \
+    make install
+
+# Update library paths
+RUN ldconfig
+ENV LD_LIBRARY_PATH=/usr/local/spdk/lib:/usr/local/lib:$LD_LIBRARY_PATH
+ENV PKG_CONFIG_PATH=/usr/local/spdk/lib/pkgconfig:$PKG_CONFIG_PATH
+ENV LIBRARY_PATH=/usr/local/spdk/lib:/usr/local/lib:$LIBRARY_PATH
+ENV SPDK_ROOT=/usr/local/spdk
+
+# Create working directory for x-load
+WORKDIR /app
+
+# Copy x-load source
+COPY . .
+
+# Build x-load
+RUN make SPDK_ROOT=/usr/local/spdk
+
+# Show some info on container start
+CMD ["bash", "-c", "echo 'X-LOAD Development Container' && echo 'SPDK installed at: /usr/local/spdk' && echo 'Run: ./x-load --help' && exec bash"]
+

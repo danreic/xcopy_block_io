@@ -1,0 +1,33 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+*.o
+x-load
+build/
+results/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation (not needed for build)
+*.md
+!README.md
+
+# Scripts (not needed in container)
+*.sh
+!scripts/*.sh
+
+# Test files
+tests/
+test_*.sh
+*.pcap
+
+# macOS
+.DS_Store
+

@@ -1,0 +1,66 @@
+# Docker Compose for X-LOAD development and running
+version: '3.8'
+
+services:
+  # Development/Build container - full SPDK build environment
+  x-load-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    image: x-load:dev
+    container_name: x-load-dev
+    volumes:
+      # Mount source for development
+      - ./src:/app/src:ro
+      - ./include:/app/include:ro
+      # Mount output directory for built binaries
+      - ./build:/app/build
+    # Privileged mode required for NVMe access
+    privileged: true
+    # Required for SPDK/DPDK
+    cap_add:
+      - SYS_ADMIN
+      - IPC_LOCK
+      - NET_ADMIN
+    # Hugepages support
+    shm_size: 4g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    devices:
+      # Expose NVMe devices (adjust as needed)
+      - /dev/hugepages:/dev/hugepages
+    network_mode: host
+    command: ["bash", "-c", "make SPDK_ROOT=/usr/local/spdk && cp x-load /app/build/"]
+
+  # Runtime container - minimal image for running x-load
+  x-load:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: x-load:latest
+    container_name: x-load-runner
+    # Privileged mode required for NVMe access
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+      - IPC_LOCK
+      - NET_ADMIN
+    # Hugepages support
+    shm_size: 4g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      # Hugepages mount
+      - /dev/hugepages:/dev/hugepages
+      # Mount results directory
+      - ./results:/app/results
+    network_mode: host
+    # Override with your actual command
+    command: ["--help"]
+

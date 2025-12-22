@@ -70,6 +70,53 @@ Then use `numactl` or `taskset` to bind X-LOAD to isolated cores.
 
 ## Building
 
+### Option 1: Docker (Recommended)
+
+Docker provides a reproducible build environment with all SPDK dependencies pre-built:
+
+```bash
+# Build the production image (includes SPDK build - takes ~10-15 minutes)
+docker build -t x-load:latest .
+
+# Or build the development image (easier for debugging)
+docker build -f Dockerfile.dev -t x-load:dev .
+
+# Run with help
+docker run --rm x-load:latest --help
+
+# Run an actual test (requires privileged mode and hugepages)
+docker run --rm \
+  --privileged \
+  -v /dev/hugepages:/dev/hugepages \
+  --network host \
+  x-load:latest \
+  --traddr 192.168.1.100 \
+  --trsvcid 4420 \
+  --hostnqn nqn.2014-08.org.nvmexpress:uuid:12345678-1234-1234-1234-123456789abc \
+  --runtime 60
+
+# Interactive development shell
+docker run -it --rm \
+  --privileged \
+  -v /dev/hugepages:/dev/hugepages \
+  -v $(pwd):/app \
+  --network host \
+  x-load:dev bash
+```
+
+#### Docker Compose
+
+For easier management:
+
+```bash
+# Build dev image and compile x-load
+docker-compose run --rm x-load-dev
+
+# The binary will be in ./build/x-load
+```
+
+### Option 2: Native Build
+
 ```bash
 # Build the executable
 make
@@ -270,6 +317,23 @@ Latency (microseconds):
 ```
 
 ## Troubleshooting
+
+### Docker Build Fails
+
+If the Docker build fails:
+
+```bash
+# Build with verbose output
+docker build --progress=plain -t x-load:latest .
+
+# Or use the simpler dev Dockerfile for easier debugging
+docker build -f Dockerfile.dev -t x-load:dev .
+```
+
+Common issues:
+- **Network errors during SPDK clone**: Retry the build, or use `--network host`
+- **isa-l build fails**: This is usually transient; retry the build
+- **Out of memory during build**: SPDK build is memory-intensive, ensure 4GB+ RAM
 
 ### SPDK Initialization Fails
 
