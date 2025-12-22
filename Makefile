@@ -114,7 +114,7 @@ $(TARGET): $(OBJECTS) $(NVME_LIB_TMP)
 
 # Clean build artifacts
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -f $(OBJECTS) $(TARGET) $(NVME_LIB_TMP)
 
 # Install (optional)
 install: $(TARGET)
