@@ -75,19 +75,23 @@ RUN if [ -d "isa-l-crypto" ]; then \
         make install; \
     fi
 
-# Configure and build SPDK
+# Configure and build SPDK (minimal config for NVMe-oF)
 WORKDIR /opt/spdk
 RUN ldconfig && \
     ./configure \
+        --disable-tests \
+        --disable-unit-tests \
+        --disable-examples \
         --without-fuse \
         --without-rbd \
         --without-iscsi-initiator \
-        --without-vtune \
         --without-vhost \
         --without-virtio \
-        --without-pmdk \
         --without-xnvme \
-        --without-usdt \
+        --without-vfio-user \
+        --without-daos \
+        --without-ublk \
+        --without-nvme-cuse \
         --prefix=/usr/local/spdk && \
     make -j$(nproc) && \
     make install

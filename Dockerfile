@@ -80,15 +80,19 @@ RUN ldconfig
 # Configure SPDK - minimal config for NVMe workloads
 # Note: Run ./configure --help to see all options
 RUN ./configure \
+    --disable-tests \
+    --disable-unit-tests \
+    --disable-examples \
     --without-fuse \
     --without-rbd \
     --without-iscsi-initiator \
-    --without-vtune \
     --without-vhost \
     --without-virtio \
-    --without-pmdk \
     --without-xnvme \
-    --without-usdt \
+    --without-vfio-user \
+    --without-daos \
+    --without-ublk \
+    --without-nvme-cuse \
     --prefix=/usr/local/spdk
 
 # Build SPDK (use available cores)
