@@ -22,12 +22,22 @@ LIBPATHS = -L$(SPDK_LIB) -L/usr/lib -L/usr/lib64 -L/usr/local/lib -L/usr/local/l
 # Use --whole-archive for nvme library to ensure TCP transport constructor runs
 # Note: We exclude CUSE (fuse) code as we don't need it
 # Order: libraries that need symbols come first, providers come later
+# Note: Keyring libraries are optional and may not exist in all SPDK versions
+
+# Detect which optional libraries exist
+SPDK_HAS_KEYRING = $(shell test -f $(SPDK_LIB)/libspdk_keyring.a && echo yes || echo no)
+SPDK_HAS_DMA = $(shell test -f $(SPDK_LIB)/libspdk_dma.a && echo yes || echo no)
+
+# Build optional library flags
+SPDK_KEYRING_LIBS = $(if $(filter yes,$(SPDK_HAS_KEYRING)),-lspdk_keyring -lspdk_keyring_linux,)
+SPDK_DMA_LIBS = $(if $(filter yes,$(SPDK_HAS_DMA)),-lspdk_dma,)
+
 SPDK_LIBS = -Wl,--start-group \
             -Wl,--whole-archive -lspdk_nvme_no_cuse -Wl,--no-whole-archive \
             -lspdk_sock -lspdk_sock_posix \
             -lspdk_accel -lspdk_event_sock \
-            -lspdk_dma \
-            -lspdk_thread -lspdk_trace -lspdk_keyring -lspdk_keyring_linux \
+            $(SPDK_DMA_LIBS) \
+            -lspdk_thread -lspdk_trace $(SPDK_KEYRING_LIBS) \
             -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
             -Wl,--end-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
