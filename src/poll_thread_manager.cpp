@@ -579,19 +579,27 @@ int PollThreadManager::start() {
         return 0;
     }
     
+    // Check if SPDK threads are enabled
+    // If not, we MUST use single-threaded mode to avoid race conditions
+    // Multiple pthreads sharing a QPair without SPDK thread synchronization
+    // causes command ID confusion and TCP errors
+    bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
+    uint32_t effective_cores = num_cores_;
+    
+    if (!use_spdk_threads && num_cores_ > 1) {
+        std::cout << "Warning: SPDK threads not available, forcing single-threaded mode" << std::endl;
+        std::cout << "         (multi-threading requires SPDK thread library)" << std::endl;
+        effective_cores = 1;
+    }
+    
     threads_.clear();
-    threads_.reserve(num_cores_);
+    threads_.reserve(effective_cores);
     
     // Check if we're in an SPDK thread context
     // After spdk_env_init(), we should be able to create threads directly
     // without explicit thread library initialization
     struct spdk_thread* current_thread = spdk_get_thread();
-    
-    // If we're not in a thread context, we need to create one first
-    // However, spdk_thread_create requires being in a thread context
-    // So we'll use a workaround: create threads from within the pthreads
-    // by having each pthread create its own SPDK thread
-    // This is not ideal but should work
+    (void)current_thread; // Unused for now
     
     // WORKAROUND: Create QPairs serially and poll for connection
     // Without SPDK threads, we need to manually poll the QPair connection
@@ -713,13 +721,13 @@ int PollThreadManager::start() {
     shared_qpair_ = shared_qpair; // Store in static for reconnection
     
     // Create threads - all will share the same QPair
-    for (uint32_t i = 0; i < num_cores_; i++) {
+    for (uint32_t i = 0; i < effective_cores; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
         ctx->spdk_ctx = spdk_ctx_;
         // Distribute the actual QPair depth across threads (not the requested depth)
         // This ensures we don't try to submit more I/O than the QPair can handle
-        ctx->target_iodepth = actual_qpair_depth_ / num_cores_;
+        ctx->target_iodepth = actual_qpair_depth_ / effective_cores;
         ctx->generator = generator_;
         ctx->lba_mgr = lba_mgr_;
         ctx->range_size = range_size_;
