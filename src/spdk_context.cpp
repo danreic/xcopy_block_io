@@ -76,10 +76,12 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
     
-    // Reduce memory usage to work with limited hugepages
     // mem_size is in MB, -1 means use all available (default)
-    // Set to 256MB to leave room for thread library mempool
-    opts.mem_size = 256;
+    // Set to 512MB to have room for:
+    // - DPDK EAL infrastructure (~128MB)
+    // - NVMe driver buffers (~64MB)  
+    // - Thread library mempool (~256MB for 8192 messages)
+    opts.mem_size = 512;
     
     // Initialize environment
     std::cout << "Initializing SPDK environment with " << opts.mem_size << " MB memory limit..." << std::endl;
