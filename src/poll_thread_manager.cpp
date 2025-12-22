@@ -461,9 +461,36 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                 consecutive_errors = 0; // Reset error counter on success
             }
         } else {
-            // QPair is disconnected - just wait and continue
-            // This allows the application to complete its full runtime
-            usleep(1000); // Longer sleep when QPair is disconnected
+            // QPair is disconnected - attempt to reconnect
+            static int reconnect_attempts = 0;
+            static const int max_reconnect_attempts = 5;
+            static const int reconnect_delay_ms = 2000;
+            
+            if (reconnect_attempts < max_reconnect_attempts) {
+                reconnect_attempts++;
+                std::cout << "Attempting to reconnect (attempt " << reconnect_attempts 
+                          << "/" << max_reconnect_attempts << ")..." << std::endl;
+                
+                // Wait before reconnecting
+                usleep(reconnect_delay_ms * 1000);
+                
+                // Try to create a new QPair
+                std::lock_guard<std::mutex> lock(qpair_mutex_);
+                if (!shared_qpair_) {
+                    shared_qpair_ = ctx->spdk_ctx->create_qpair(iodepth_);
+                    if (shared_qpair_) {
+                        ctx->qpair = shared_qpair_;
+                        consecutive_errors = 0;
+                        reconnect_attempts = 0;
+                        std::cout << "Reconnection successful!" << std::endl;
+                    } else {
+                        std::cerr << "Reconnection failed, will retry..." << std::endl;
+                    }
+                }
+            } else {
+                // Max reconnection attempts reached - wait and continue
+                usleep(1000);
+            }
         }
         
         // Small sleep to avoid 100% CPU (not ideal but works for sanity test)
