@@ -38,7 +38,7 @@ SPDK_LIBS = -Wl,--start-group \
             -lspdk_accel -lspdk_event_sock \
             $(SPDK_DMA_LIBS) \
             -lspdk_thread -lspdk_trace $(SPDK_KEYRING_LIBS) \
-            -lspdk_json -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
+            -lspdk_json -lspdk_jsonrpc -lspdk_rpc -lspdk_event -lspdk_log -lspdk_util -lspdk_env_dpdk \
             -Wl,--end-group \
             -lrte_eal -lrte_mempool -lrte_ring -lrte_mbuf \
             -lrte_ethdev -lrte_net -lrte_bus_pci -lrte_pci \
