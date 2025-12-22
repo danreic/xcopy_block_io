@@ -6,18 +6,7 @@
 #include <errno.h> // For ENXIO, ENODEV
 #include <chrono>  // For keep-alive timing
 
-// SPDK thread functions for multi-threaded mode
-extern "C" {
-    struct spdk_thread *spdk_thread_create(const char *name, 
-                                            const struct spdk_cpuset *cpumask);
-    void spdk_thread_destroy(struct spdk_thread *thread);
-    void spdk_set_thread(struct spdk_thread *thread);
-    struct spdk_thread *spdk_get_thread(void);
-    int spdk_thread_poll(struct spdk_thread *thread, uint32_t max_msgs, 
-                         uint64_t now);
-    bool spdk_thread_is_exited(struct spdk_thread *thread);
-    void spdk_thread_exit(struct spdk_thread *thread);
-}
+// SPDK thread functions are already declared in spdk/thread.h (included via spdk_context.h)
 
 namespace xload {
 

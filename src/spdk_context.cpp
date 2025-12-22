@@ -4,15 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-// SPDK thread library for multi-threading support
-extern "C" {
-    // Thread library initialization functions
-    int spdk_thread_lib_init(void (*thread_op_fn)(struct spdk_thread *), size_t ctx_sz);
-    void spdk_thread_lib_fini(void);
-    int spdk_thread_lib_init_ext(int (*thread_op_fn)(struct spdk_thread *, 
-                                                      enum spdk_thread_op op),
-                                  size_t ctx_sz, size_t msg_mempool_size);
-}
+// SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
 namespace xload {
 
@@ -82,7 +74,6 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Initialize SPDK environment with minimal options (matching SPDK tools)
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
-    opts.opts_size = sizeof(opts);
     opts.name = "x-load";
     
     // Initialize environment
@@ -96,7 +87,8 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     if (g_use_spdk_threads) {
         // Try the extended version first (has configurable mempool size)
         // Use larger mempool size (65536 messages) to avoid "out of mempool" issues
-        int rc = spdk_thread_lib_init_ext(nullptr, 0, 65536);
+        // Signature: spdk_thread_lib_init_ext(thread_op_fn, thread_op_supported_fn, ctx_sz, msg_mempool_size)
+        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 65536);
         if (rc != 0) {
             std::cerr << "Warning: spdk_thread_lib_init_ext failed (rc=" << rc 
                       << "), trying simple init..." << std::endl;
