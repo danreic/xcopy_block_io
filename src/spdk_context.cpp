@@ -76,19 +76,27 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
     
+    // Reduce memory usage to work with limited hugepages
+    // mem_size is in MB, -1 means use all available (default)
+    // Set to 256MB to leave room for thread library mempool
+    opts.mem_size = 256;
+    
     // Initialize environment
+    std::cout << "Initializing SPDK environment with " << opts.mem_size << " MB memory limit..." << std::endl;
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;
+        std::cerr << "Hint: Check hugepages availability with 'cat /proc/meminfo | grep HugePages'" << std::endl;
         return -1;
     }
+    std::cout << "SPDK environment initialized successfully" << std::endl;
     
     // Initialize SPDK thread library
     // We need this for multi-threaded operation and proper completion handling
     if (g_use_spdk_threads) {
         // Try the extended version first (has configurable mempool size)
-        // Use larger mempool size (65536 messages) to avoid "out of mempool" issues
+        // Use smaller mempool size (8192 messages) to conserve hugepage memory
         // Signature: spdk_thread_lib_init_ext(thread_op_fn, thread_op_supported_fn, ctx_sz, msg_mempool_size)
-        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 65536);
+        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 8192);
         if (rc != 0) {
             std::cerr << "Warning: spdk_thread_lib_init_ext failed (rc=" << rc 
                       << "), trying simple init..." << std::endl;
