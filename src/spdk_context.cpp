@@ -1,5 +1,4 @@
 #include "spdk_context.h"
-#include <spdk/sock.h>
 #include <cstring>
 #include <iostream>
 #include <cstdio>
@@ -67,32 +66,16 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
     }
     
-    // Initialize SPDK environment
+    // Initialize SPDK environment with minimal options (matching SPDK tools)
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
-    // Use -1 for private shared memory (avoids conflicts with other SPDK processes)
-    opts.shm_id = -1;
-    
-    // Configure hugepages
-    opts.hugepage_single_segments = false;
-    opts.unlink_hugepage = false;
-    
-    // Set memory size (512 MB should be sufficient)
-    opts.mem_size = 512;
-    
-    // For containers: set core mask to use only current core
-    opts.core_mask = "0x1";
     
     // Initialize environment
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;
         return -1;
     }
-    
-    // Initialize default socket implementation
-    // This ensures the posix socket module is available for TCP transport
-    spdk_sock_set_default_impl("posix");
     
     // WORKAROUND: Skip SPDK thread creation entirely for sanity testing
     // We'll use a single-threaded model without SPDK threads
