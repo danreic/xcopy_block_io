@@ -60,6 +60,12 @@ public:
     // Get main SPDK thread (for workaround)
     struct spdk_thread* get_main_thread() const { return main_thread_; }
     
+    // Check if SPDK threads are enabled (multi-threaded mode)
+    static bool is_spdk_threads_enabled();
+    
+    // Enable/disable SPDK threads (call before init())
+    static void set_spdk_threads_enabled(bool enabled);
+    
 private:
     struct spdk_nvme_ctrlr* ctrlr_;
     struct spdk_nvme_transport_id trid_;

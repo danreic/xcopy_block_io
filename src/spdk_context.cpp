@@ -4,7 +4,20 @@
 #include <cstdio>
 #include <cstdlib>
 
+// SPDK thread library for multi-threading support
+extern "C" {
+    // Thread library initialization functions
+    int spdk_thread_lib_init(void (*thread_op_fn)(struct spdk_thread *), size_t ctx_sz);
+    void spdk_thread_lib_fini(void);
+    int spdk_thread_lib_init_ext(int (*thread_op_fn)(struct spdk_thread *, 
+                                                      enum spdk_thread_op op),
+                                  size_t ctx_sz, size_t msg_mempool_size);
+}
+
 namespace xload {
+
+// Flag to control threading mode - can be set before init()
+static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
 
 SpdkContext::SpdkContext()
     : ctrlr_(nullptr)
@@ -78,13 +91,37 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         return -1;
     }
     
-    // WORKAROUND: Skip SPDK thread creation entirely for sanity testing
-    // We'll use a single-threaded model without SPDK threads
-    // This bypasses the thread library initialization issue completely
-    // Note: This means we can't use multiple threads, but it allows sanity testing
-    main_thread_ = nullptr;  // No SPDK threads - workaround mode
-    std::cout << "Note: Running in single-threaded mode (workaround for mempool issue)" << std::endl;
-    std::cout << "      SPDK threads disabled - using direct I/O submission" << std::endl;
+    // Initialize SPDK thread library
+    // We need this for multi-threaded operation and proper completion handling
+    if (g_use_spdk_threads) {
+        // Try the extended version first (has configurable mempool size)
+        // Use larger mempool size (65536 messages) to avoid "out of mempool" issues
+        int rc = spdk_thread_lib_init_ext(nullptr, 0, 65536);
+        if (rc != 0) {
+            std::cerr << "Warning: spdk_thread_lib_init_ext failed (rc=" << rc 
+                      << "), trying simple init..." << std::endl;
+            
+            // Fall back to simple initialization
+            rc = spdk_thread_lib_init(nullptr, 0);
+            if (rc != 0) {
+                std::cerr << "Warning: spdk_thread_lib_init also failed (rc=" << rc 
+                          << "), falling back to workaround mode" << std::endl;
+                g_use_spdk_threads = false;
+            }
+        }
+    }
+    
+    if (g_use_spdk_threads) {
+        std::cout << "SPDK thread library initialized (multi-threaded mode enabled)" << std::endl;
+        main_thread_ = nullptr;  // Will be set per-thread in PollThreadManager
+    } else {
+        // WORKAROUND: Skip SPDK thread creation entirely
+        // We'll use a single-threaded model without SPDK threads
+        // This bypasses the thread library initialization issue completely
+        main_thread_ = nullptr;
+        std::cout << "Note: Running in single-threaded mode (workaround mode)" << std::endl;
+        std::cout << "      SPDK threads disabled - using direct I/O submission" << std::endl;
+    }
     
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
@@ -239,6 +276,19 @@ void SpdkContext::cleanup() {
     
     namespaces_.clear();
     initialized_ = false;
+    
+    // Cleanup SPDK thread library if it was initialized
+    if (g_use_spdk_threads) {
+        spdk_thread_lib_fini();
+    }
+}
+
+bool SpdkContext::is_spdk_threads_enabled() {
+    return g_use_spdk_threads;
+}
+
+void SpdkContext::set_spdk_threads_enabled(bool enabled) {
+    g_use_spdk_threads = enabled;
 }
 
 } // namespace xload

@@ -6,6 +6,19 @@
 #include <errno.h> // For ENXIO, ENODEV
 #include <chrono>  // For keep-alive timing
 
+// SPDK thread functions for multi-threaded mode
+extern "C" {
+    struct spdk_thread *spdk_thread_create(const char *name, 
+                                            const struct spdk_cpuset *cpumask);
+    void spdk_thread_destroy(struct spdk_thread *thread);
+    void spdk_set_thread(struct spdk_thread *thread);
+    struct spdk_thread *spdk_get_thread(void);
+    int spdk_thread_poll(struct spdk_thread *thread, uint32_t max_msgs, 
+                         uint64_t now);
+    bool spdk_thread_is_exited(struct spdk_thread *thread);
+    void spdk_thread_exit(struct spdk_thread *thread);
+}
+
 namespace xload {
 
 // Static members for shared qpair management
@@ -400,9 +413,32 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                   << ctx->thread_id << std::endl;
     }
     
-    // WORKAROUND: Run without SPDK threads - use direct I/O submission
-    // This bypasses the thread library initialization issue completely
-    ctx->spdk_thread = nullptr;  // No SPDK thread in workaround mode
+    // Check if SPDK threads are enabled
+    bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
+    
+    if (use_spdk_threads) {
+        // Create SPDK thread for this worker
+        char thread_name[32];
+        snprintf(thread_name, sizeof(thread_name), "worker_%u", ctx->thread_id);
+        
+        ctx->spdk_thread = spdk_thread_create(thread_name, nullptr);
+        if (!ctx->spdk_thread) {
+            std::cerr << "Error: Failed to create SPDK thread for worker " 
+                      << ctx->thread_id << std::endl;
+            std::cerr << "       Falling back to direct I/O mode" << std::endl;
+            use_spdk_threads = false;
+        } else {
+            // Set this thread as the current SPDK thread
+            spdk_set_thread(ctx->spdk_thread);
+            std::cout << "Created SPDK thread '" << thread_name << "' for worker " 
+                      << ctx->thread_id << std::endl;
+        }
+    }
+    
+    if (!use_spdk_threads) {
+        // WORKAROUND: Run without SPDK threads - use direct I/O submission
+        ctx->spdk_thread = nullptr;
+    }
     
     // QPair should already be created in start() function (serialized creation)
     if (!ctx->qpair) {
@@ -423,6 +459,11 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     const auto admin_poll_interval = std::chrono::milliseconds(1000); // Poll admin every 1 second
     
     while (!ctx->should_stop.load()) {
+        // Poll SPDK thread if using SPDK threads
+        if (use_spdk_threads && ctx->spdk_thread) {
+            spdk_thread_poll(ctx->spdk_thread, 0, 0);
+        }
+        
         // Poll admin queue for keep-alive (required by NVMe-oF)
         auto now = std::chrono::steady_clock::now();
         if (now - last_admin_poll >= admin_poll_interval) {
@@ -514,12 +555,28 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     // Wait for outstanding I/O to complete (if QPair is still valid)
     if (ctx->qpair) {
         while (ctx->outstanding_io.load() > 0) {
+            // Poll SPDK thread if using SPDK threads
+            if (use_spdk_threads && ctx->spdk_thread) {
+                spdk_thread_poll(ctx->spdk_thread, 0, 0);
+            }
             spdk_nvme_qpair_process_completions(ctx->qpair, 0);
             usleep(100);
         }
     } else {
         // QPair disconnected - just wait a bit for any pending operations
         usleep(1000);
+    }
+    
+    // Cleanup SPDK thread if used
+    if (use_spdk_threads && ctx->spdk_thread) {
+        spdk_thread_exit(ctx->spdk_thread);
+        // Poll until thread has exited
+        while (!spdk_thread_is_exited(ctx->spdk_thread)) {
+            spdk_thread_poll(ctx->spdk_thread, 0, 0);
+            usleep(100);
+        }
+        spdk_thread_destroy(ctx->spdk_thread);
+        ctx->spdk_thread = nullptr;
     }
     
     // Cleanup - don't delete QPair here as it's shared across threads
