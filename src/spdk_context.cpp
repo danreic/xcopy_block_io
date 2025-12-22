@@ -76,15 +76,16 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
     
-    // mem_size is in MB, -1 means use all available (default)
-    // Set to 512MB to have room for:
-    // - DPDK EAL infrastructure (~128MB)
-    // - NVMe driver buffers (~64MB)  
-    // - Thread library mempool (~256MB for 8192 messages)
-    opts.mem_size = 512;
+    // Use unique shared memory ID to avoid conflicts with other DPDK/SPDK processes
+    // -1 means auto-generate a unique ID based on PID
+    opts.shm_id = -1;
+    
+    // Don't limit memory - let SPDK use what it needs from available hugepages
+    // The thread library mempool needs memory from DPDK's pool
+    // opts.mem_size is left at default (-1 = use all available)
     
     // Initialize environment
-    std::cout << "Initializing SPDK environment with " << opts.mem_size << " MB memory limit..." << std::endl;
+    std::cout << "Initializing SPDK environment (shm_id=" << opts.shm_id << ")..." << std::endl;
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;
         std::cerr << "Hint: Check hugepages availability with 'cat /proc/meminfo | grep HugePages'" << std::endl;
