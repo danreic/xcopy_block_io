@@ -80,6 +80,9 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Set memory size (512 MB should be sufficient)
     opts.mem_size = 512;
     
+    // Container-friendly settings: no PCI access needed for NVMe-oF
+    opts.no_pci = true;
+    
     // Initialize environment
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;

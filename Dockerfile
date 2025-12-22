@@ -77,8 +77,9 @@ WORKDIR /opt/spdk
 # Update library cache
 RUN ldconfig
 
-# Configure SPDK - minimal config for NVMe workloads
+# Configure SPDK - minimal config for NVMe workloads in containers
 # Note: Run ./configure --help to see all options
+# --without-uring: Avoid io_uring issues in Docker containers
 RUN ./configure \
     --disable-tests \
     --disable-unit-tests \
@@ -93,6 +94,7 @@ RUN ./configure \
     --without-daos \
     --without-ublk \
     --without-nvme-cuse \
+    --without-uring \
     --prefix=/usr/local/spdk
 
 # Build SPDK (use available cores)
@@ -182,6 +184,9 @@ RUN ldconfig
 
 # Set library path
 ENV LD_LIBRARY_PATH=/usr/local/spdk/lib:/usr/local/lib:$LD_LIBRARY_PATH
+
+# SPDK/DPDK environment variables for container operation
+ENV SPDK_SOCK_IMPL_DEFAULT=posix
 
 # Configure hugepages info
 RUN echo "========================================" > /etc/motd && \
