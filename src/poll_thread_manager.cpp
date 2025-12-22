@@ -477,7 +477,7 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                 // Try to create a new QPair
                 std::lock_guard<std::mutex> lock(qpair_mutex_);
                 if (!shared_qpair_) {
-                    shared_qpair_ = ctx->spdk_ctx->create_qpair(iodepth_);
+                    shared_qpair_ = ctx->spdk_ctx->create_qpair(ctx->target_iodepth);
                     if (shared_qpair_) {
                         ctx->qpair = shared_qpair_;
                         consecutive_errors = 0;
