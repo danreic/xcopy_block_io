@@ -2,8 +2,9 @@
 # Uses SPDK for kernel bypass and poll-mode operation
 
 CXX = g++
-CXXFLAGS = -Wall -Wextra -O2 -g -std=c++17 -march=native
-LDFLAGS = -lpthread -lnuma -ldl
+CXXFLAGS = -Wall -Wextra -O2 -g -std=c++17 -march=native -fPIC
+# -no-pie required because SPDK static libs are not built with -fPIC
+LDFLAGS = -lpthread -lnuma -ldl -no-pie
 
 # SPDK paths (adjust these based on your SPDK installation)
 SPDK_ROOT ?= /usr/local/spdk
