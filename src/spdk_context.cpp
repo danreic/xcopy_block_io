@@ -15,6 +15,7 @@ namespace xload {
 
 // Flag to control threading mode - can be set before init()
 static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
+static bool g_verbose = false;  // Global verbose flag
 
 // Check if DPDK mempool works (needed for SPDK thread library)
 // Returns true if mempool works, false otherwise (pthread fallback will be used)
@@ -129,7 +130,9 @@ int SpdkContext::init(const std::vector<std::string>& traddrs, const std::string
         std::cerr << "Hint: Check hugepages availability with 'cat /proc/meminfo | grep HugePages'" << std::endl;
         return -1;
     }
-    std::cout << "SPDK environment initialized" << std::endl;
+    if (g_verbose) {
+        std::cout << "SPDK environment initialized" << std::endl;
+    }
     
     // Check if DPDK mempool works (needed for SPDK thread library)
     bool mempool_works = check_dpdk_mempool();
@@ -150,10 +153,12 @@ int SpdkContext::init(const std::vector<std::string>& traddrs, const std::string
         g_use_spdk_threads = false;
     }
     
-    if (g_use_spdk_threads) {
-        std::cout << "SPDK thread library ENABLED" << std::endl;
-    } else {
-        std::cout << "Using pthread-based multi-threading (SPDK threads unavailable)" << std::endl;
+    if (g_verbose) {
+        if (g_use_spdk_threads) {
+            std::cout << "SPDK thread library ENABLED" << std::endl;
+        } else {
+            std::cout << "Using pthread-based multi-threading" << std::endl;
+        }
     }
     main_thread_ = nullptr;
     
@@ -350,6 +355,14 @@ bool SpdkContext::is_spdk_threads_enabled() {
 
 void SpdkContext::set_spdk_threads_enabled(bool enabled) {
     g_use_spdk_threads = enabled;
+}
+
+void SpdkContext::set_verbose(bool verbose) {
+    g_verbose = verbose;
+}
+
+bool SpdkContext::is_verbose() {
+    return g_verbose;
 }
 
 } // namespace xload

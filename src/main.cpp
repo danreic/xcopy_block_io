@@ -33,6 +33,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // Set verbose flag for all modules
+    SpdkContext::set_verbose(config.verbose);
+    
     if (config.verbose) {
         config.print();
     }

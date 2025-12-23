@@ -72,6 +72,10 @@ public:
     // Enable/disable SPDK threads (call before init())
     static void set_spdk_threads_enabled(bool enabled);
     
+    // Global verbose flag
+    static void set_verbose(bool verbose);
+    static bool is_verbose();
+    
 private:
     std::vector<struct spdk_nvme_ctrlr*> ctrlrs_;  // Multiple controllers for multi-path
     std::vector<struct spdk_nvme_transport_id> trids_;

@@ -10,6 +10,9 @@
 
 namespace xload {
 
+// Helper for verbose logging
+#define VERBOSE_LOG(msg) if (SpdkContext::is_verbose()) { std::cout << msg << std::endl; }
+
 // Static members for shared qpair management
 struct spdk_nvme_qpair* PollThreadManager::shared_qpair_ = nullptr;
 ::std::mutex PollThreadManager::qpair_mutex_;
@@ -75,39 +78,17 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
     uint16_t status_code = cpl->status.sc;
     
     if (spdk_nvme_cpl_is_error(cpl) || status_code != 0) {
-        // Log detailed error information (limit to first 5 errors and then every 1000th error)
+        // Log errors only in verbose mode (limit logging)
         static std::atomic<uint64_t> error_count(0);
         uint64_t count = error_count.fetch_add(1);
         
-        bool should_log = (count < 5) || (count % 1000 == 0);
-        
-        if (should_log) {
-            std::cerr << "XCOPY command failed #" << count << ": SCT=" << (int)cpl->status.sct 
-                      << " SC=" << (int)cpl->status.sc 
-                      << " (0x" << std::hex << (int)cpl->status.sc << std::dec << ")"
-                      << " num_ranges=" << op->num_ranges
-                      << " dst_lba=" << op->dst_lba
-                      << " total_blocks=" << op->total_blocks;
+        if (SpdkContext::is_verbose()) {
+            bool should_log = (count < 5) || (count % 1000 == 0);
             
-            // Log first range details for debugging (only for first few errors)
-            if (count < 5 && op->ranges && op->num_ranges > 0) {
-                std::cerr << " first_range: src_lba=" << op->ranges[0].slba
-                          << " nlb=" << op->ranges[0].nlb
-                          << " (actual_blocks=" << (op->ranges[0].nlb + 1) << ")";
+            if (should_log) {
+                std::cerr << "XCOPY error #" << count << ": SC=" << (int)cpl->status.sc 
+                          << " dst_lba=" << op->dst_lba << std::endl;
             }
-            
-            // Check if destination LBA + total_blocks exceeds namespace (only for first few errors)
-            if (count < 5 && ctx->spdk_ctx) {
-                const NamespaceInfo* ns_info = ctx->spdk_ctx->get_ns_info(op->dst_nsid);
-                if (ns_info) {
-                    uint64_t dst_end = op->dst_lba + op->total_blocks;
-                    std::cerr << " dst_ns_size=" << ns_info->size_blocks
-                              << " dst_end=" << dst_end
-                              << " (exceeds=" << (dst_end > ns_info->size_blocks ? "YES" : "NO") << ")";
-                }
-            }
-            
-            std::cerr << std::endl;
         }
         
         // Record failure
@@ -204,8 +185,6 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
     
     if (!ns) {
-        // Namespace not found - free operation and return
-        std::cerr << "Error: Namespace " << op.dst_nsid << " not found" << std::endl;
         op.free_ranges();
         return 0;
     }
@@ -216,7 +195,6 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
     
     // Verify op_copy has valid ranges
     if (!op_copy->ranges || op_copy->num_ranges != op.num_ranges) {
-        std::cerr << "Error: Failed to copy operation ranges" << std::endl;
         delete op_copy;
         op.free_ranges();
         return 0;
@@ -241,12 +219,8 @@ int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
         ctx->outstanding_io++;
         return 1;
     } else {
-        // Submission failed - log error
-        std::cerr << "Error: Failed to submit XCOPY command: rc=" << rc 
-                  << " (errno=" << errno << ")" << std::endl;
-        // Handle backpressure
         handle_backpressure(ctx, op);
-        delete op_copy; // Clean up op_copy since submission failed
+        delete op_copy;
         return 0;
     }
 }
@@ -282,15 +256,12 @@ int PollThreadManager::poller_func(void* arg) {
     
     // Check if qpair needs reconnection
     if (!ctx->qpair) {
-        // Try to reconnect this thread's QPair on its assigned controller
         struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, actual_qpair_depth_, ctx->ctrlr_index);
         if (new_qpair) {
             ctx->qpair = new_qpair;
-            std::cout << "Thread " << ctx->thread_id << ": QPair reconnected on controller " 
-                      << ctx->ctrlr_index << std::endl;
+            VERBOSE_LOG("Thread " << ctx->thread_id << ": QPair reconnected");
         } else {
-            // Reconnection failed - will retry next poll
-            usleep(100000); // Wait 100ms before retrying
+            usleep(100000);
             return 1;
         }
     }
@@ -319,7 +290,6 @@ int PollThreadManager::poller_func(void* arg) {
 
 void PollThreadManager::thread_func(PollThreadContext* ctx) {
     if (!ctx) {
-        std::cerr << "Error: Invalid context for thread" << std::endl;
         return;
     }
     
@@ -327,10 +297,7 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(ctx->thread_id, &cpuset);
-    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) != 0) {
-        std::cerr << "Warning: Failed to set CPU affinity for thread " 
-                  << ctx->thread_id << std::endl;
-    }
+    pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
     
     // Check if SPDK threads are enabled
     bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
@@ -342,8 +309,6 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         
         ctx->spdk_thread = spdk_thread_create(thread_name, nullptr);
         if (!ctx->spdk_thread) {
-            std::cerr << "Error: Failed to create SPDK thread for worker " 
-                      << ctx->thread_id << ", falling back to direct I/O mode" << std::endl;
             use_spdk_threads = false;
         } else {
             // Set this thread as the current SPDK thread
@@ -356,9 +321,8 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         ctx->spdk_thread = nullptr;
     }
     
-    // QPair should already be created in start() function (serialized creation)
+    // QPair should already be created in start() function
     if (!ctx->qpair) {
-        std::cerr << "Error: QPair not created for thread " << ctx->thread_id << std::endl;
         return;
     }
     
@@ -412,46 +376,27 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
             int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
             if (num_completions < 0) {
                 consecutive_errors++;
-                std::cerr << "Warning: QPair poll error (rc=" << num_completions 
-                          << ", consecutive=" << consecutive_errors << ")" << std::endl;
                 if (consecutive_errors >= max_consecutive_errors) {
-                    std::cerr << "Error: QPair disconnected after " << consecutive_errors 
-                              << " consecutive errors. Freeing QPair..." << std::endl;
-                    // Delete THIS thread's QPair (not shared_qpair_)
                     ctx->spdk_ctx->delete_qpair(ctx->qpair);
                     ctx->qpair = nullptr;
-                    reconnect_attempts = 0;  // Reset for this thread
-                    // Reconnection will be attempted in next poll cycle
+                    reconnect_attempts = 0;
                 }
             } else {
-                if (consecutive_errors > 0) {
-                    std::cout << "QPair recovered after " << consecutive_errors << " errors" << std::endl;
-                }
                 consecutive_errors = 0;
             }
         } else {
-            // QPair is disconnected - attempt to reconnect using same controller
+            // QPair is disconnected - attempt to reconnect
             if (reconnect_attempts < max_reconnect_attempts) {
                 reconnect_attempts++;
-                std::cout << "Thread " << ctx->thread_id << ": Reconnecting to controller " 
-                          << ctx->ctrlr_index << " (attempt " << reconnect_attempts 
-                          << "/" << max_reconnect_attempts << ")..." << std::endl;
-                
-                // Wait before reconnecting
                 usleep(reconnect_delay_ms * 1000);
                 
-                // Try to create a new QPair on the same controller
                 struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, ctx->target_iodepth, ctx->ctrlr_index);
                 if (new_qpair) {
                     ctx->qpair = new_qpair;
                     consecutive_errors = 0;
                     reconnect_attempts = 0;
-                    std::cout << "Thread " << ctx->thread_id << ": Reconnection successful!" << std::endl;
-                } else {
-                    std::cerr << "Thread " << ctx->thread_id << ": Reconnection failed, will retry..." << std::endl;
                 }
             } else {
-                // Max reconnection attempts reached - wait and continue
                 usleep(1000);
             }
         }
@@ -504,9 +449,8 @@ int PollThreadManager::start() {
     bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
     uint32_t effective_cores = num_cores_;
     
-    if (!use_spdk_threads && num_cores_ > 1) {
-        std::cout << "Using pthread-based multi-threading with per-thread QPairs" << std::endl;
-        std::cout << "  (each thread gets its own dedicated QPair - no SPDK threads needed)" << std::endl;
+    if (!use_spdk_threads && num_cores_ > 1 && SpdkContext::is_verbose()) {
+        std::cout << "Using pthread-based multi-threading" << std::endl;
     }
     
     threads_.clear();
@@ -535,8 +479,6 @@ int PollThreadManager::start() {
     if (per_thread_depth < 4) per_thread_depth = 4;
     
     if (per_thread_depth > max_queue_depth) {
-        std::cout << "Note: Per-thread queue depth (" << per_thread_depth 
-                  << ") exceeds controller maximum (" << max_queue_depth << ")" << std::endl;
         per_thread_depth = max_queue_depth;
     }
     
@@ -546,9 +488,10 @@ int PollThreadManager::start() {
     
     actual_qpair_depth_ = per_thread_depth;
     
-    std::cout << "Creating QPairs across " << num_controllers << " controller(s), "
-              << effective_cores << " thread(s) requested (depth " 
-              << per_thread_depth << " each)" << std::endl;
+    if (SpdkContext::is_verbose()) {
+        std::cout << "Creating " << effective_cores << " QPairs (depth " 
+                  << per_thread_depth << ") across " << num_controllers << " controller(s)" << std::endl;
+    }
     
     // Track how many QPairs we've created on each controller
     std::vector<uint32_t> qpairs_per_ctrlr(num_controllers, 0);
@@ -591,17 +534,14 @@ int PollThreadManager::start() {
         }
         
         if (!qpair_created) {
-            // All controllers are full
             if (threads_.empty()) {
                 std::cerr << "Error: Failed to create any QPairs" << std::endl;
                 return -1;
             }
-            std::cout << "  All controllers at queue limit - using " << threads_.size() << " thread(s)" << std::endl;
             break;
         }
         
         // Poll QPair to establish connection
-        std::cout << "  Thread " << i << " [ctrlr " << ctrlr_idx << "]: Connecting..." << std::flush;
         int poll_count = 0;
         const int max_polls = 5000; // 5 seconds max per QPair
         bool connected = false;
@@ -616,11 +556,11 @@ int PollThreadManager::start() {
                     break;
                 }
             } else if (rc == -ENXIO || rc == -ENODEV) {
-                std::cerr << " FAILED (rc=" << rc << ")" << std::endl;
                 spdk_ctx_->delete_qpair(ctx->qpair);
                 for (auto& t : threads_) {
                     if (t->qpair) spdk_ctx_->delete_qpair(t->qpair);
                 }
+                std::cerr << "Error: QPair connection failed" << std::endl;
                 return -1;
             }
             usleep(1000);
@@ -628,11 +568,11 @@ int PollThreadManager::start() {
         }
         
         if (!connected) {
-            std::cerr << " TIMEOUT" << std::endl;
             spdk_ctx_->delete_qpair(ctx->qpair);
             for (auto& t : threads_) {
                 if (t->qpair) spdk_ctx_->delete_qpair(t->qpair);
             }
+            std::cerr << "Error: QPair connection timeout" << std::endl;
             return -1;
         }
         
@@ -641,8 +581,6 @@ int PollThreadManager::start() {
             spdk_nvme_qpair_process_completions(ctx->qpair, 0);
             usleep(1000);
         }
-        
-        std::cout << " OK" << std::endl;
         
         // Create pthread for this context
         ctx->pthread = new std::thread(thread_func, ctx.get());
@@ -654,15 +592,10 @@ int PollThreadManager::start() {
         return -1;
     }
     
-    // Show distribution across controllers
-    std::cout << "Started " << threads_.size() << " thread(s) across " << num_controllers << " controller(s)";
+    // Show summary (always shown)
+    std::cout << "Started " << threads_.size() << " worker(s)";
     if (num_controllers > 1) {
-        std::cout << " [";
-        for (size_t c = 0; c < num_controllers; c++) {
-            if (c > 0) std::cout << ", ";
-            std::cout << "c" << c << ":" << qpairs_per_ctrlr[c];
-        }
-        std::cout << "]";
+        std::cout << " across " << num_controllers << " controllers";
     }
     std::cout << std::endl;
     
@@ -711,20 +644,16 @@ struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ct
     
     struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr(ctrlr_index);
     if (!ctrlr) {
-        std::cerr << "Error: No controller available for reconnection (index=" << ctrlr_index << ")" << std::endl;
         return nullptr;
     }
     
-    // Create new qpair with same options on the specific controller
     spdk_nvme_io_qpair_opts opts;
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
     opts.qprio = SPDK_NVME_QPRIO_URGENT;
     opts.io_queue_size = qpair_depth;
     
-    std::cout << "Reconnecting QPair on controller " << ctrlr_index << " with queue depth: " << qpair_depth << std::endl;
     struct spdk_nvme_qpair* new_qpair = ctx->spdk_ctx->create_qpair(qpair_depth, &opts, ctrlr_index);
     if (!new_qpair) {
-        std::cerr << "Error: Failed to create new QPair for reconnection" << std::endl;
         return nullptr;
     }
     
@@ -737,29 +666,22 @@ struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ct
         int rc = spdk_nvme_qpair_process_completions(new_qpair, 0);
         
         if (rc >= 0) {
-            usleep(100); // Small delay
+            usleep(100);
             rc = spdk_nvme_qpair_process_completions(new_qpair, 0);
             if (rc >= 0) {
                 connected = true;
                 break;
             }
         } else if (rc == -ENXIO || rc == -ENODEV) {
-            std::cerr << "Error: QPair reconnection failed permanently (rc=" << rc << ")" << std::endl;
             ctx->spdk_ctx->delete_qpair(new_qpair);
             return nullptr;
         }
         
-        usleep(1000); // 1ms delay
+        usleep(1000);
         poll_count++;
-        
-        if (poll_count % 1000 == 0) {
-            std::cout << "  Still reconnecting... (" << (poll_count / 1000) << "s)" << std::endl;
-        }
     }
     
     if (!connected) {
-        std::cerr << "Error: QPair reconnection failed to establish after " 
-                  << (max_polls / 1000) << " seconds" << std::endl;
         ctx->spdk_ctx->delete_qpair(new_qpair);
         return nullptr;
     }
@@ -769,8 +691,6 @@ struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ct
         spdk_nvme_qpair_process_completions(new_qpair, 0);
         usleep(1000);
     }
-    
-    std::cout << "QPair reconnected successfully after " << (poll_count * 1000 / 1000) << " ms" << std::endl;
     
     return new_qpair;
 }

@@ -188,6 +188,9 @@ ENV LD_LIBRARY_PATH=/usr/local/spdk/lib:/usr/local/lib:$LD_LIBRARY_PATH
 # SPDK/DPDK environment variables for container operation
 ENV SPDK_SOCK_IMPL_DEFAULT=posix
 
+# Create DPDK runtime directory (required for mempools)
+RUN mkdir -p /var/run/dpdk && chmod 777 /var/run/dpdk
+
 # Configure hugepages info
 RUN echo "========================================" > /etc/motd && \
     echo "  X-LOAD - XCOPY Load Generator" >> /etc/motd && \
