@@ -109,10 +109,14 @@ ENV SPDK_ROOT=/usr/local/spdk
 # Force POSIX socket implementation (most compatible in Docker)
 ENV SPDK_SOCK_IMPL_DEFAULT=posix
 
-# CRITICAL: Create DPDK runtime directory
-# DPDK's mempool/ring creation requires this directory to exist
-# Without it, rte_mempool_create fails with ENOENT (No such file or directory)
-RUN mkdir -p /var/run/dpdk/rte && chmod 777 /var/run/dpdk /var/run/dpdk/rte
+# DPDK memory configuration for containers
+# Use legacy memory mode which works better in containers
+ENV DPDK_LEGACY_MEM=1
+
+# CRITICAL: Create DPDK runtime directories
+# DPDK's mempool/ring creation requires these directories to exist
+RUN mkdir -p /var/run/dpdk/spdk0 /var/run/dpdk/rte /tmp/dpdk && \
+    chmod 777 /var/run/dpdk /var/run/dpdk/spdk0 /var/run/dpdk/rte /tmp/dpdk
 
 # Create working directory for x-load
 WORKDIR /app

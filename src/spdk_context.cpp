@@ -1,63 +1,74 @@
 #include "spdk_context.h"
 #include <cstring>
 #include <iostream>
-#include <fstream>
-#include <sstream>
 #include <cstdio>
 #include <cstdlib>
-
-// DPDK includes for memory diagnostics
-#include <rte_malloc.h>
-#include <rte_memory.h>
-#include <rte_mempool.h>
-#include <rte_lcore.h>
-#include <rte_errno.h>
-
-// For directory creation
 #include <sys/stat.h>
-#include <sys/types.h>
+
+// DPDK includes for mempool diagnostics and workarounds
+#include <rte_mempool.h>
+#include <rte_ring.h>
+#include <rte_errno.h>
+#include <rte_malloc.h>
+#include <rte_version.h>
 
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
 namespace xload {
 
-// Helper function to get hugepage info from /proc/meminfo
-static void print_hugepage_info(const char* prefix) {
-    std::ifstream meminfo("/proc/meminfo");
-    if (!meminfo.is_open()) {
-        std::cerr << prefix << "Could not read /proc/meminfo" << std::endl;
-        return;
-    }
-    
-    std::string line;
-    uint64_t hugepages_total = 0, hugepages_free = 0, hugepage_size_kb = 0;
-    
-    while (std::getline(meminfo, line)) {
-        if (line.find("HugePages_Total:") != std::string::npos) {
-            std::istringstream iss(line);
-            std::string key;
-            iss >> key >> hugepages_total;
-        } else if (line.find("HugePages_Free:") != std::string::npos) {
-            std::istringstream iss(line);
-            std::string key;
-            iss >> key >> hugepages_free;
-        } else if (line.find("Hugepagesize:") != std::string::npos) {
-            std::istringstream iss(line);
-            std::string key;
-            iss >> key >> hugepage_size_kb;
-        }
-    }
-    
-    uint64_t total_mb = (hugepages_total * hugepage_size_kb) / 1024;
-    uint64_t free_mb = (hugepages_free * hugepage_size_kb) / 1024;
-    
-    std::cout << prefix << "Hugepages: " << hugepages_free << "/" << hugepages_total 
-              << " free (" << free_mb << "/" << total_mb << " MB), page_size=" 
-              << hugepage_size_kb << " KB" << std::endl;
-}
-
 // Flag to control threading mode - can be set before init()
 static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
+
+// Try to diagnose and fix DPDK mempool issues in containers
+static bool diagnose_and_fix_mempool_issue() {
+    std::cout << "[DPDK] Version: " << rte_version() << std::endl;
+    
+    // Check if we can create a simple ring (mempool uses rings internally)
+    rte_errno = 0;
+    struct rte_ring* test_ring = rte_ring_create("test_ring", 64, SOCKET_ID_ANY, 0);
+    if (test_ring) {
+        std::cout << "[DPDK] Ring creation OK" << std::endl;
+        rte_ring_free(test_ring);
+    } else {
+        std::cerr << "[DPDK] Ring creation FAILED: rte_errno=" << rte_errno 
+                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+        return false;
+    }
+    
+    // Try mempool with explicit flags that work better in containers
+    rte_errno = 0;
+    struct rte_mempool* test_pool = rte_mempool_create(
+        "test_pool",           // name
+        256,                   // n (number of elements)
+        64,                    // elt_size
+        0,                     // cache_size (no per-lcore cache - important for containers!)
+        0,                     // private_data_size
+        nullptr,               // mp_init
+        nullptr,               // mp_init_arg
+        nullptr,               // obj_init
+        nullptr,               // obj_init_arg
+        SOCKET_ID_ANY,         // socket_id
+        MEMPOOL_F_NO_SPREAD    // flags - don't spread across memory channels
+    );
+    
+    if (test_pool) {
+        std::cout << "[DPDK] Mempool creation OK (with NO_SPREAD flag)" << std::endl;
+        rte_mempool_free(test_pool);
+        return true;
+    }
+    
+    std::cerr << "[DPDK] Mempool FAILED: rte_errno=" << rte_errno 
+              << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+    
+    // Check malloc stats to see if memory is available
+    struct rte_malloc_socket_stats stats;
+    if (rte_malloc_get_socket_stats(SOCKET_ID_ANY, &stats) == 0) {
+        std::cout << "[DPDK] Heap: total=" << (stats.heap_totalsz_bytes / (1024*1024)) << "MB"
+                  << ", free=" << (stats.heap_freesz_bytes / (1024*1024)) << "MB" << std::endl;
+    }
+    
+    return false;
+}
 
 SpdkContext::SpdkContext()
     : ctrlr_(nullptr)
@@ -125,94 +136,69 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     opts.name = "x-load";
     
     // Use fixed shared memory ID for predictable DPDK runtime directory
-    // -1 would auto-generate based on PID, but this can cause issues in containers
-    // Using 0 creates files in /var/run/dpdk/spdk0/ which is more predictable
     opts.shm_id = 0;
     
-    // CRITICAL: Explicitly request memory for DPDK heap allocation
-    // The thread library mempool requires memory from DPDK's heap, not just hugepages
-    // Default may not properly reserve heap memory in some container configurations
-    // Request 512MB which is more than enough for thread mempools + DMA buffers
+    // Request sufficient memory for DPDK heap allocation
     opts.mem_size = 512;
     
-    // CRITICAL: Ensure DPDK runtime directories exist
-    // DPDK's mempool/ring creation requires runtime directories to exist
-    // With shm_id=0, DPDK uses file prefix "spdk0" -> /var/run/dpdk/spdk0/
-    const char* dpdk_dirs[] = {
-        "/var/run/dpdk",
-        "/var/run/dpdk/spdk0",
-        "/var/run/dpdk/rte"
-    };
-    for (const char* dir : dpdk_dirs) {
-        if (mkdir(dir, 0777) == 0) {
-            std::cout << "Created DPDK directory: " << dir << std::endl;
-        }
-    }
+    // Container-friendly options:
+    // - no_pci: We don't need local PCI devices for NVMe-oF/TCP
+    // - hugepage_single_segments: Use single file segments (more compatible in containers)
+    opts.no_pci = true;
+    opts.hugepage_single_segments = true;
+    opts.unlink_hugepage = true;  // Cleanup hugepage files on exit
     
-    // Print hugepage info before SPDK init
-    print_hugepage_info("[Pre-init] ");
+    // Ensure DPDK runtime directories exist (silently ignore if they already exist)
+    mkdir("/var/run/dpdk", 0777);
+    mkdir("/var/run/dpdk/spdk0", 0777);
+    mkdir("/tmp/dpdk", 0777);
     
     // Initialize environment
-    std::cout << "Initializing SPDK environment (shm_id=" << opts.shm_id << ")..." << std::endl;
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;
         std::cerr << "Hint: Check hugepages availability with 'cat /proc/meminfo | grep HugePages'" << std::endl;
         return -1;
     }
-    std::cout << "SPDK environment initialized successfully" << std::endl;
+    std::cout << "SPDK environment initialized" << std::endl;
     
-    // Print hugepage info after SPDK env init
-    print_hugepage_info("[Post-env-init] ");
-    
-    // Print DPDK memory stats to understand heap allocation
-    struct rte_malloc_socket_stats malloc_stats;
-    if (rte_malloc_get_socket_stats(0, &malloc_stats) == 0) {
-        std::cout << "[DPDK Memory] heap_total=" << (malloc_stats.heap_totalsz_bytes / (1024*1024)) << " MB"
-                  << ", heap_alloc=" << (malloc_stats.heap_allocsz_bytes / (1024*1024)) << " MB"
-                  << ", heap_free=" << (malloc_stats.heap_freesz_bytes / (1024*1024)) << " MB"
-                  << ", alloc_count=" << malloc_stats.alloc_count
-                  << std::endl;
-    } else {
-        std::cout << "[DPDK Memory] Could not get socket 0 malloc stats" << std::endl;
-    }
-    
-    // Test: Try direct DPDK mempool creation to verify DPDK is working
-    rte_errno = 0;
-    struct rte_mempool* test_pool = rte_mempool_create(
-        "test_pool", 256, 64, 0, 0, nullptr, nullptr, nullptr, nullptr, SOCKET_ID_ANY, 0);
-    if (test_pool) {
-        std::cout << "[DPDK Test] Direct mempool creation OK" << std::endl;
-        rte_mempool_free(test_pool);
-    } else {
-        std::cerr << "[DPDK Test] Direct mempool FAILED: rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-    }
+    // Diagnose DPDK mempool capabilities
+    bool mempool_works = diagnose_and_fix_mempool_issue();
     
     // Initialize SPDK thread library
-    if (g_use_spdk_threads) {
-        // Clear errno before call to get accurate error info
-        errno = 0;
-        rte_errno = 0;
-        
-        // Use default mempool size (sufficient for most workloads)
-        int rc = spdk_thread_lib_init(nullptr, 0);
+    if (g_use_spdk_threads && mempool_works) {
+        // Try with small mempool size first (works better in containers)
+        // The extended init allows specifying mempool size explicitly
+        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 1024);
         if (rc == 0) {
-            std::cout << "SPDK thread library initialized" << std::endl;
+            std::cout << "SPDK thread library initialized (mempool_size=1024)" << std::endl;
         } else {
-            std::cerr << "spdk_thread_lib_init failed: rc=" << rc 
-                      << ", errno=" << errno << " (" << strerror(errno) << ")"
-                      << ", rte_errno=" << rte_errno << " (" << rte_strerror(rte_errno) << ")"
-                      << std::endl;
-            g_use_spdk_threads = false;
+            // Try with even smaller mempool
+            rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 256);
+            if (rc == 0) {
+                std::cout << "SPDK thread library initialized (mempool_size=256)" << std::endl;
+            } else {
+                // Try default init as last resort
+                rc = spdk_thread_lib_init(nullptr, 0);
+                if (rc == 0) {
+                    std::cout << "SPDK thread library initialized (default)" << std::endl;
+                } else {
+                    std::cerr << "SPDK thread library init failed (rc=" << rc << ")" << std::endl;
+                    std::cerr << "  rte_errno=" << rte_errno << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+                    g_use_spdk_threads = false;
+                }
+            }
         }
+    } else if (g_use_spdk_threads && !mempool_works) {
+        std::cerr << "DPDK mempool not working - cannot use SPDK threads" << std::endl;
+        g_use_spdk_threads = false;
     }
     
     if (g_use_spdk_threads) {
-        std::cout << "Multi-threaded mode enabled" << std::endl;
-        main_thread_ = nullptr;  // Will be set per-thread in PollThreadManager
+        std::cout << "Multi-threaded mode ENABLED" << std::endl;
+        main_thread_ = nullptr;
     } else {
         main_thread_ = nullptr;
-        std::cout << "Running in single-threaded mode (SPDK thread library not available)" << std::endl;
+        std::cerr << "WARNING: Running in single-threaded mode" << std::endl;
     }
     
     // Initialize transport ID for NVMe/TCP
