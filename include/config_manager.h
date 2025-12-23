@@ -32,6 +32,7 @@ struct Config {
     // Output configuration
     bool json_output;            // Output in JSON format
     bool verbose;                // Verbose output
+    uint32_t status_interval_ms; // Live status update interval in ms (0 = disabled)
     
     // Default constructor
     Config();

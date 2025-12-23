@@ -64,7 +64,8 @@ SOURCES = $(SRCDIR)/main.cpp \
           $(SRCDIR)/json_reporter.cpp \
           $(SRCDIR)/error_handler.cpp \
           $(SRCDIR)/lba_manager.cpp \
-          $(SRCDIR)/config_manager.cpp
+          $(SRCDIR)/config_manager.cpp \
+          $(SRCDIR)/live_monitor.cpp
 
 OBJECTS = $(SOURCES:.cpp=.o)
 TARGET = x-load

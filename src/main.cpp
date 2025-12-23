@@ -11,6 +11,7 @@
 #include "statistics.h"
 #include "json_reporter.h"
 #include "high_res_timer.h"
+#include "live_monitor.h"
 
 namespace xload {
 
@@ -122,10 +123,15 @@ int main(int argc, char** argv) {
         std::cout << "Running workload..." << std::endl;
     }
     
+    // Initialize live monitor for real-time BW/IOPS display
+    // Disable live monitor if JSON output is enabled (to avoid mixing outputs)
+    LiveMonitor monitor(&stats, config.json_output ? 0 : config.status_interval_ms);
+    
     // Run for specified duration
     uint64_t start_time_ns = HighResTimer::now_ns();
     uint64_t runtime_ns = config.runtime_sec * 1000000000ULL;
     
+    monitor.start();
     g_running = true;
     while (g_running) {
         if (config.runtime_sec > 0) {
@@ -135,9 +141,16 @@ int main(int argc, char** argv) {
             }
         }
         
+        // Update live monitor display
+        monitor.update();
+        
         // Sleep briefly to avoid busy-waiting
-        usleep(100000); // 100ms
+        // Use smaller sleep when monitor is active for smoother updates
+        usleep(monitor.is_enabled() ? 50000 : 100000); // 50ms or 100ms
     }
+    
+    // Finalize live monitor display
+    monitor.finish();
     
     // Stop threads
     thread_mgr.stop();

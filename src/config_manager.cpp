@@ -23,6 +23,7 @@ Config::Config()
     , enable_cross_namespace(false)  // Default: same-namespace copy only (format 0)
     , json_output(false)
     , verbose(false)
+    , status_interval_ms(1000)  // Default: update every 1 second (like fio)
 {
 }
 
@@ -93,6 +94,8 @@ void Config::print() const {
     std::cout << "  Range Size: " << range_size << " blocks" << std::endl;
     std::cout << "  JSON Output: " << (json_output ? "yes" : "no") << std::endl;
     std::cout << "  Verbose: " << (verbose ? "yes" : "no") << std::endl;
+    std::cout << "  Status Interval: " << status_interval_ms << "ms" 
+              << (status_interval_ms == 0 ? " (disabled)" : "") << std::endl;
 }
 
 void ConfigManager::print_usage(const char* prog_name) {
@@ -117,6 +120,7 @@ void ConfigManager::print_usage(const char* prog_name) {
     std::cout << std::endl;
     std::cout << "Output Options:" << std::endl;
     std::cout << "  --json                Output statistics in JSON format" << std::endl;
+    std::cout << "  --status-interval MS  Live status update interval in ms (default: 1000, 0 = disable)" << std::endl;
     std::cout << "  -v, --verbose         Verbose output" << std::endl;
     std::cout << "  -h, --help            Show this help message" << std::endl;
     std::cout << std::endl;
@@ -140,6 +144,7 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
         {"dst-lba-end", required_argument, 0, 1005},
         {"range-size", required_argument, 0, 1006},
         {"enable-cross-ns", no_argument, 0, 1007},
+        {"status-interval", required_argument, 0, 1008},
         {"json", no_argument, 0, 'j'},
         {"verbose", no_argument, 0, 'v'},
         {"help", no_argument, 0, 'h'},
@@ -192,6 +197,9 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
                 break;
             case 1007:
                 config.enable_cross_namespace = true;
+                break;
+            case 1008:
+                config.status_interval_ms = strtoul(optarg, nullptr, 0);
                 break;
             case 'j':
                 config.json_output = true;
