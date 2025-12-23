@@ -7,210 +7,179 @@ A high-performance NVMe initiator client designed to achieve absolute saturation
 - **SPDK-Based Architecture**: Uses Storage Performance Development Kit (SPDK) for kernel bypass and user-space NVMe/TCP driver
 - **Poll-Mode Operation**: Lockless, non-interrupt-driven I/O with dedicated CPU core polling threads
 - **High Concurrency**: Configurable I/O depth and CPU core count for maximum target saturation
+- **Multi-Path Support**: Connect to multiple target IPs simultaneously for increased throughput
 - **Dynamic XCOPY Complexity**: Randomized number of source range descriptors per command (1 to max_ranges)
 - **Cross-Namespace Copy**: Supports TP4130 cross-namespace copy with randomized source NSIDs
+- **Live Monitoring**: Real-time performance display with IOPS, throughput, and latency statistics
 - **Comprehensive Statistics**: High-resolution latency measurements with P99, P99.9, P99.99 percentiles
 - **Backpressure Resilience**: Graceful handling of saturation errors (0x807, 0x189) without blocking
 - **JSON Output**: Optional structured JSON output for automated reporting
 
-## Prerequisites
+## Quick Start with Docker
 
-### System Requirements
+### Prerequisites
 
-- Linux kernel 5.0+ (for NVMe/TCP support)
-- C++17 compiler (GCC 7+ or Clang 5+)
-- SPDK library (with NVMe/TCP transport support)
-- Hugepages configured
-- CPU isolation capabilities (numactl)
+Configure hugepages on the host:
 
-### Installing SPDK
-
-1. Clone and build SPDK:
 ```bash
-git clone https://github.com/spdk/spdk.git
-cd spdk
-git submodule update --init
-./configure --with-nvme
-make
-sudo make install
+# Allocate 2MB hugepages (1024 pages = 2GB)
+echo 1024 | sudo tee /proc/sys/vm/nr_hugepages
+
+# Verify hugepages
+cat /proc/meminfo | grep HugePages
 ```
 
-2. Set `SPDK_ROOT` environment variable or update Makefile:
-```bash
-export SPDK_ROOT=/path/to/spdk
-```
+### Option 1: Development Image (Recommended for Testing)
 
-### Configuring Hugepages
-
-X-LOAD requires hugepages for SPDK's zero-copy operations:
+The dev image includes a shell for debugging and iterative testing:
 
 ```bash
-# Allocate 2MB hugepages (adjust count based on your needs)
-sudo sysctl vm.nr_hugepages=1024
-
-# Or use 1GB hugepages (more efficient for large memory allocations)
-sudo sysctl vm.nr_hugepages_1gb=4
-```
-
-Verify hugepages:
-```bash
-cat /proc/meminfo | grep Huge
-```
-
-### CPU Isolation (Recommended)
-
-For best performance, isolate CPU cores for X-LOAD:
-
-```bash
-# Isolate cores 2-5 (example)
-sudo isolcpus=2,3,4,5
-```
-
-Then use `numactl` or `taskset` to bind X-LOAD to isolated cores.
-
-## Building
-
-### Option 1: Docker (Recommended)
-
-Docker provides a reproducible build environment with all SPDK dependencies pre-built:
-
-```bash
-# Build the production image (includes SPDK build - takes ~10-15 minutes)
-docker build -t x-load:latest .
-
-# Or build the development image (easier for debugging)
+# Build the development image
 docker build -f Dockerfile.dev -t x-load:dev .
 
-# Run with help
-docker run --rm x-load:latest --help
-
-# Run an actual test (requires privileged mode and hugepages)
-docker run --rm \
-  --privileged \
-  -v /dev/hugepages:/dev/hugepages \
-  --network host \
-  x-load:latest \
+# Run a test
+docker run --rm --privileged -v /dev/hugepages:/dev/hugepages x-load:dev ./x-load \
   --traddr 192.168.1.100 \
   --trsvcid 4420 \
-  --hostnqn nqn.2014-08.org.nvmexpress:uuid:12345678-1234-1234-1234-123456789abc \
-  --runtime 60
+  --hostnqn nqn.2014-08.org.nvmexpress:myhost \
+  --subnqn nqn.2024-08.com.example:subsystem \
+  --dst-nsid 1 \
+  --runtime 60 \
+  --num-cores 8 \
+  --iodepth 256 \
+  --range-size 8192
+```
 
-# Interactive development shell
-docker run -it --rm \
-  --privileged \
+### Option 2: Production Image (Smaller, Optimized)
+
+The production image is ~3x smaller with no development tools:
+
+```bash
+# Build the production image
+docker build -t x-load:prod .
+
+# Run a test (no ./x-load prefix needed - uses ENTRYPOINT)
+docker run --rm --privileged -v /dev/hugepages:/dev/hugepages x-load:prod \
+  --traddr 192.168.1.100 \
+  --trsvcid 4420 \
+  --hostnqn nqn.2014-08.org.nvmexpress:myhost \
+  --subnqn nqn.2024-08.com.example:subsystem \
+  --dst-nsid 1 \
+  --runtime 60 \
+  --num-cores 8 \
+  --iodepth 256 \
+  --range-size 8192
+```
+
+### Multi-Path Example (Multiple IPs)
+
+Connect to the same subsystem via multiple IPs for increased throughput:
+
+```bash
+docker run --rm --privileged -v /dev/hugepages:/dev/hugepages x-load:dev ./x-load \
+  --traddr 192.168.1.100 \
+  --traddr 192.168.1.101 \
+  --traddr 192.168.1.102 \
+  --traddr 192.168.1.103 \
+  --trsvcid 4420 \
+  --hostnqn nqn.2014-08.org.nvmexpress:myhost \
+  --subnqn nqn.2024-08.com.example:subsystem \
+  --dst-nsid 1 \
+  --runtime 300 \
+  --num-cores 16 \
+  --iodepth 256 \
+  --range-size 8192
+```
+
+### Interactive Shell (Development)
+
+```bash
+docker run -it --rm --privileged \
   -v /dev/hugepages:/dev/hugepages \
   -v $(pwd):/app \
-  --network host \
   x-load:dev bash
 ```
 
-#### Docker Compose
+## Command-Line Options
 
-For easier management:
+### Required
 
-```bash
-# Build dev image and compile x-load
-docker-compose run --rm x-load-dev
+| Option | Description |
+|--------|-------------|
+| `--traddr ADDR` | Target IP address (can be specified multiple times for multi-path) |
 
-# The binary will be in ./build/x-load
+### Connection
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--trsvcid PORT` | 4420 | NVMe-oF service port |
+| `--hostnqn NQN` | auto | Host NQN identifier |
+| `--subnqn NQN` | (empty) | Subsystem NQN |
+
+### Workload
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--runtime SEC` | 10 | Runtime duration in seconds (0 = infinite) |
+| `--iodepth DEPTH` | 64 | Maximum global I/O depth |
+| `--num-cores CORES` | 1 | Number of worker threads/QPairs |
+| `--range-size BLOCKS` | 2048 | Blocks per XCOPY range (max: 8192 recommended) |
+| `--max-ranges NUM` | 1 | Source ranges per command (1-16) |
+
+### Namespace Configuration
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--dst-nsid NSID` | 1 | Destination namespace ID |
+| `--src-nsid NSID` | (same as dst) | Source namespace ID (can be specified multiple times) |
+| `--dst-lba-start LBA` | 0 | Starting LBA for destination |
+| `--dst-lba-end LBA` | 0 | Ending LBA for destination (0 = use namespace size) |
+
+### Output
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output statistics in JSON format |
+| `-v, --verbose` | Enable verbose debug output |
+| `-h, --help` | Show help message |
+
+## Live Monitor Output
+
+During execution, X-LOAD displays real-time statistics:
+
+```
+[00:15] IOPS: 45,230 | BW: 176.68 MB/s | Lat(avg): 178.2 µs | Outstanding: 256 | Err: 0
 ```
 
-### Option 2: Native Build
-
-```bash
-# Build the executable
-make
-
-# Check dependencies
-make check-libs
-
-# Clean build artifacts
-make clean
-```
-
-### Build Configuration
-
-Edit `Makefile` to adjust:
-- `SPDK_ROOT`: Path to SPDK installation (default: `/usr/local/spdk`)
-- `SPDK_LIB`: Path to SPDK libraries
-- JSON library path (if not in standard locations)
-
-## Usage
-
-### Basic Example
-
-```bash
-./x-load \
-  --traddr 192.168.1.100 \
-  --trsvcid 4420 \
-  --hostnqn nqn.2014-08.org.nvmexpress:uuid:12345678-1234-1234-1234-123456789abc \
-  --runtime 60 \
-  --iodepth 256 \
-  --num-cores 4 \
-  --max-ranges 16
-```
-
-### Advanced Example with Cross-Namespace Copy
-
-```bash
-./x-load \
-  --traddr 192.168.1.100 \
-  --trsvcid 4420 \
-  --hostnqn nqn.2014-08.org.nvmexpress:uuid:12345678-1234-1234-1234-123456789abc \
-  --dst-nsid 2 \
-  --src-nsid 1 \
-  --src-nsid 2 \
-  --src-nsid 3 \
-  --runtime 300 \
-  --iodepth 512 \
-  --num-cores 8 \
-  --max-ranges 16 \
-  --json
-```
-
-### Command-Line Options
-
-**Required:**
-- `--traddr ADDR`: Target IP address
-- `--trsvcid PORT`: Service ID/port (default: 4420)
-- `--hostnqn NQN`: Host NQN
-
-**Workload:**
-- `--runtime SEC`: Runtime duration in seconds (0 = infinite, default: 10)
-- `--iodepth DEPTH`: Maximum global I/O depth (default: 64)
-- `--num-cores CORES`: Number of dedicated CPU cores (default: 1)
-- `--max-ranges NUM`: Maximum source ranges per command (1-16, default: 1)
-- `--dst-nsid NSID`: Destination namespace ID (default: 1)
-- `--src-nsid NSID`: Source namespace ID (can be specified multiple times)
-- `--dst-lba-start LBA`: Starting LBA for destination (default: 0)
-- `--dst-lba-end LBA`: Ending LBA for destination (default: 0 = use namespace size)
-
-**Output:**
-- `--json`: Output statistics in JSON format
-- `-v, --verbose`: Verbose output
-- `-h, --help`: Show help message
+| Field | Description |
+|-------|-------------|
+| `[MM:SS]` | Elapsed time |
+| `IOPS` | Operations per second |
+| `BW` | Bandwidth in MB/s |
+| `Lat(avg)` | Average latency in microseconds |
+| `Outstanding` | Currently in-flight I/O operations |
+| `Err` | Total errors encountered |
 
 ## Architecture
 
-X-LOAD is architected for maximum performance:
-
 ### Poll-Mode Threads
 
-- Each CPU core runs a dedicated SPDK poll-mode thread
-- One QPair per thread (enforced lockless design)
+- Each worker thread runs a dedicated SPDK poll loop
+- One QPair per thread (lockless design)
 - Continuous CPU polling (no interrupts, no context switches)
-- Continuation-passing style (CSP) callbacks for non-blocking I/O
+- Threads distributed round-robin across connected controllers (multi-path)
 
-### I/O Flow
+### Multi-Path Operation
 
-1. **Submission**: Polling thread continuously submits XCOPY commands to maintain target I/O depth
-2. **Completion**: Completion callbacks immediately trigger next submission (CSP pattern)
-3. **Backpressure**: Saturation errors (0x807, 0x189) are deferred without blocking
-4. **Statistics**: High-resolution timing captures submission-to-completion latency
+When multiple `--traddr` options are provided:
+1. X-LOAD connects to each IP as a separate NVMe controller
+2. Worker threads are distributed across controllers
+3. Each controller provides its maximum QPairs
+4. Aggregate throughput scales with number of paths
 
 ### Memory Management
 
-- All I/O structures allocated via SPDK DMA memory (`spdk_dma_malloc`)
+- All I/O structures allocated via SPDK DMA memory
 - Zero-copy operations where possible
 - Hugepage-backed memory for performance
 
@@ -222,145 +191,85 @@ Start with `--iodepth 64` and increase based on target capabilities:
 - High-end targets: 256-512
 - Low-latency targets: 32-128
 
-### CPU Cores
+### CPU Cores / Threads
 
-Match `--num-cores` to available isolated cores:
-- Each core handles `iodepth / num_cores` outstanding I/O
-- More cores = higher aggregate throughput (if target can handle it)
+`--num-cores` controls the number of worker threads:
+- Each thread gets its own QPair
+- More threads = higher aggregate throughput
+- Limited by target's max QPairs per connection
 
-### Range Complexity
+### Range Size
 
-`--max-ranges` controls XCOPY command complexity:
-- Higher values = more descriptor processing on target
-- Test with values 1, 4, 8, 16 to find target's sweet spot
+`--range-size` controls blocks per XCOPY operation:
+- Maximum practical: 8192 blocks (4MB with 512B blocks)
+- NVMe spec limit: 65536 blocks (but target may limit lower)
+- Higher values = better throughput, fewer IOPS
 
-### CPU Affinity
+### Multi-Path
 
-For best performance, bind X-LOAD to isolated cores:
-
-```bash
-numactl --cpunodebind=0 --membind=0 ./x-load [options]
-```
-
-Or use `taskset`:
-
-```bash
-taskset -c 2-5 ./x-load [options]
-```
-
-## Output Format
-
-### Human-Readable (Default)
-
-```
-=== X-LOAD Workload Complete ===
-Duration: 60.00 seconds
-Operations completed: 1234567
-Operations failed: 0
-Bytes copied: 1234567890 (1177.37 MB)
-
-Throughput:
-  IOPs: 20576.12
-  MB/s: 19.62
-
-Latency (microseconds):
-  Average: 12.34
-  Min: 5.67
-  Max: 1234.56
-  Std Dev: 23.45
-  P99: 45.67
-  P99.9: 123.45
-  P99.99: 456.78
-==================================
-```
-
-### JSON Format (`--json`)
-
-```json
-{
-  "configuration": {
-    "traddr": "192.168.1.100",
-    "trsvcid": "4420",
-    "hostnqn": "...",
-    "runtime_sec": 60,
-    "iodepth": 256,
-    "num_cores": 4,
-    "max_ranges": 16
-  },
-  "runtime": {
-    "elapsed_sec": 60.000
-  },
-  "statistics": {
-    "operations_completed": 1234567,
-    "operations_failed": 0,
-    "bytes_copied": 1234567890,
-    "throughput": {
-      "iops": 20576.12,
-      "mbps": 19.62
-    },
-    "latency": {
-      "avg_us": 12.34,
-      "min_us": 5.67,
-      "max_us": 1234.56,
-      "std_dev_us": 23.45,
-      "p99_us": 45.67,
-      "p99_9_us": 123.45,
-      "p99_99_us": 456.78
-    },
-    "errors": {
-      "total": 0,
-      "saturation": 0,
-      "insufficient_resources": 0
-    }
-  }
-}
-```
+For maximum throughput:
+- Use multiple `--traddr` options
+- Each path provides additional QPairs
+- Threads automatically distribute across paths
 
 ## Troubleshooting
 
-### Docker Build Fails
-
-If the Docker build fails:
-
-```bash
-# Build with verbose output
-docker build --progress=plain -t x-load:latest .
-
-# Or use the simpler dev Dockerfile for easier debugging
-docker build -f Dockerfile.dev -t x-load:dev .
-```
-
-Common issues:
-- **Network errors during SPDK clone**: Retry the build, or use `--network host`
-- **isa-l build fails**: This is usually transient; retry the build
-- **Out of memory during build**: SPDK build is memory-intensive, ensure 4GB+ RAM
 
 ### SPDK Initialization Fails
 
-- Check hugepages: `cat /proc/meminfo | grep Huge`
-- Verify SPDK installation: `ls $SPDK_ROOT/lib/libspdk_nvme.a`
-- Check permissions for hugepage access
+```
+Failed to initialize SPDK environment
+Hint: Check hugepages availability
+```
 
-### Connection Fails
+**Fix**: Configure hugepages on the host:
+```bash
+echo 1024 | sudo tee /proc/sys/vm/nr_hugepages
+```
+
+### No Free I/O Queue IDs
+
+```
+*ERROR* No free I/O queue IDs
+```
+
+This means the target has reached its maximum QPairs. X-LOAD handles this gracefully by using fewer threads.
+
+### XCOPY Command Failures (SC=2)
+
+```
+XCOPY command failed: SC=2 (Invalid Field)
+```
+
+**Fix**: Reduce `--range-size`. The target has a maximum copy size limit smaller than requested.
+
+### Connection Issues
 
 - Verify target is reachable: `ping <traddr>`
-- Check NVMe/TCP port: `telnet <traddr> <trsvcid>`
+- Check NVMe/TCP port: `nc -zv <traddr> <trsvcid>`
 - Verify NQN format matches target configuration
 
-### Low Performance
+## Building from Source
 
-- Increase `--iodepth` (if target can handle it)
-- Add more CPU cores with `--num-cores`
-- Verify CPU affinity (use `taskset` or `numactl`)
-- Check for CPU throttling: `cat /proc/cpuinfo | grep MHz`
+### Native Build
 
-### Saturation Errors (0x807, 0x189)
+```bash
+# Set SPDK path
+export SPDK_ROOT=/path/to/spdk
 
-These are expected when saturating the target:
-- 0x807: Queue Full - target's submission queue is full
-- 0x189: Insufficient Resources - target is resource-constrained
+# Build
+make
 
-X-LOAD handles these gracefully by deferring retry without blocking.
+# Run
+./x-load --help
+```
+
+### Build Requirements
+
+- Linux kernel 5.0+
+- C++17 compiler (GCC 7+ or Clang 5+)
+- SPDK library with NVMe/TCP transport
+- nlohmann-json3-dev
 
 ## License
 
