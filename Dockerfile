@@ -167,6 +167,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     libnuma1 \
     libssl3 \
+    openssl \
+    ca-certificates \
     libaio1 \
     liburing2 \
     libuuid1 \
