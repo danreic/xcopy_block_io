@@ -124,6 +124,7 @@ RUN apt-get update && apt-get install -y \
     libaio-dev \
     liburing-dev \
     uuid-dev \
+    libarchive-dev \
     nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -169,6 +170,7 @@ RUN apt-get update && apt-get install -y \
     libaio1 \
     liburing2 \
     libuuid1 \
+    libarchive13 \
     pciutils \
     && rm -rf /var/lib/apt/lists/*
 
