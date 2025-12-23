@@ -5,14 +5,9 @@
 #include <cstdlib>
 #include <sys/stat.h>
 
-// DPDK includes for mempool diagnostics and workarounds
+// DPDK includes for mempool check
 #include <rte_mempool.h>
-#include <rte_ring.h>
 #include <rte_errno.h>
-#include <rte_malloc.h>
-#include <rte_version.h>
-#include <rte_memzone.h>
-#include <rte_lcore.h>
 
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
@@ -21,87 +16,33 @@ namespace xload {
 // Flag to control threading mode - can be set before init()
 static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
 
-// Try to diagnose and fix DPDK mempool issues in containers
-static bool diagnose_and_fix_mempool_issue() {
-    std::cout << "[DPDK] Version: " << rte_version() << std::endl;
-    std::cout << "[DPDK] Main lcore: " << rte_get_main_lcore() 
-              << ", lcore_count: " << rte_lcore_count() << std::endl;
-    
-    // Check if we can create a memzone directly (lowest level allocation)
-    rte_errno = 0;
-    const struct rte_memzone* mz = rte_memzone_reserve("test_mz", 4096, 0, 0);
-    if (mz) {
-        std::cout << "[DPDK] Memzone creation OK (addr=" << mz->addr << ")" << std::endl;
-        rte_memzone_free(mz);
-    } else {
-        std::cerr << "[DPDK] Memzone creation FAILED: rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-    }
-    
-    // Check if we can create a simple ring
-    rte_errno = 0;
-    struct rte_ring* test_ring = rte_ring_create("test_ring", 64, 0, 0);
-    if (test_ring) {
-        std::cout << "[DPDK] Ring creation OK" << std::endl;
-        rte_ring_free(test_ring);
-    } else {
-        std::cerr << "[DPDK] Ring creation FAILED: rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-        return false;
-    }
-    
-    // Try mempool with explicit socket 0 (not SOCKET_ID_ANY which is -1)
+// Check if DPDK mempool works (needed for SPDK thread library)
+// Returns true if mempool works, false otherwise (pthread fallback will be used)
+static bool check_dpdk_mempool() {
+    // Try to create a simple mempool - this is what SPDK thread library needs
     rte_errno = 0;
     struct rte_mempool* test_pool = rte_mempool_create_empty(
-        "test_pool",           // name
-        256,                   // n (number of elements)
-        64,                    // elt_size
-        0,                     // cache_size (0 = no per-lcore cache)
-        0,                     // private_data_size
-        0,                     // socket_id = 0 (explicit, not SOCKET_ID_ANY)
-        0                      // flags
-    );
+        "test_pool", 256, 64, 0, 0, SOCKET_ID_ANY, 0);
     
     if (!test_pool) {
-        std::cerr << "[DPDK] Mempool create_empty FAILED (socket=0): rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-        
-        // Try with SOCKET_ID_ANY as fallback
-        rte_errno = 0;
-        test_pool = rte_mempool_create_empty(
-            "test_pool2", 256, 64, 0, 0, SOCKET_ID_ANY, 0);
-        if (!test_pool) {
-            std::cerr << "[DPDK] Mempool create_empty FAILED (SOCKET_ID_ANY): rte_errno=" << rte_errno 
-                      << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-            return false;
-        }
+        // Mempool creation failed - will use pthread-based multi-threading instead
+        return false;
     }
-    std::cout << "[DPDK] Mempool create_empty OK" << std::endl;
     
-    // Set mempool ops
-    rte_errno = 0;
+    // Set mempool ops and populate
     int rc = rte_mempool_set_ops_byname(test_pool, "ring_mp_mc", nullptr);
     if (rc != 0) {
-        std::cerr << "[DPDK] Mempool set_ops FAILED: rc=" << rc 
-                  << ", rte_errno=" << rte_errno << std::endl;
         rte_mempool_free(test_pool);
         return false;
     }
-    std::cout << "[DPDK] Mempool set_ops OK" << std::endl;
     
-    // Populate the mempool
-    rte_errno = 0;
     rc = rte_mempool_populate_default(test_pool);
     if (rc < 0) {
-        std::cerr << "[DPDK] Mempool populate FAILED: rc=" << rc 
-                  << ", rte_errno=" << rte_errno << std::endl;
         rte_mempool_free(test_pool);
         return false;
     }
-    std::cout << "[DPDK] Mempool populate OK (" << rc << " objects)" << std::endl;
     
     rte_mempool_free(test_pool);
-    std::cout << "[DPDK] Full mempool test PASSED" << std::endl;
     return true;
 }
 
@@ -198,8 +139,8 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     }
     std::cout << "SPDK environment initialized" << std::endl;
     
-    // Diagnose DPDK mempool capabilities
-    bool mempool_works = diagnose_and_fix_mempool_issue();
+    // Check if DPDK mempool works (needed for SPDK thread library)
+    bool mempool_works = check_dpdk_mempool();
     
     // Initialize SPDK thread library
     if (g_use_spdk_threads && mempool_works) {
@@ -226,17 +167,18 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
             }
         }
     } else if (g_use_spdk_threads && !mempool_works) {
-        std::cerr << "DPDK mempool not working - cannot use SPDK threads" << std::endl;
+        // DPDK mempool issue - fall back to pthread-based multi-threading
         g_use_spdk_threads = false;
     }
     
     if (g_use_spdk_threads) {
-        std::cout << "Multi-threaded mode ENABLED" << std::endl;
-        main_thread_ = nullptr;
+        std::cout << "SPDK thread library ENABLED" << std::endl;
     } else {
-        main_thread_ = nullptr;
-        std::cerr << "WARNING: Running in single-threaded mode" << std::endl;
+        // Note: pthread-based multi-threading still works without SPDK threads
+        // Each thread gets its own QPair - no SPDK thread library needed
+        std::cout << "Using pthread-based multi-threading (SPDK threads unavailable)" << std::endl;
     }
+    main_thread_ = nullptr;
     
     // Initialize transport ID for NVMe/TCP
     memset(&trid_, 0, sizeof(trid_));
