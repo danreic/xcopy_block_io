@@ -134,11 +134,21 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Request 512MB which is more than enough for thread mempools + DMA buffers
     opts.mem_size = 512;
     
-    // CRITICAL: Ensure DPDK runtime directory exists
-    // DPDK's mempool/ring creation requires /var/run/dpdk/rte to exist
-    // Without it, rte_mempool_create fails with ENOENT
-    mkdir("/var/run/dpdk", 0777);
-    mkdir("/var/run/dpdk/rte", 0777);
+    // CRITICAL: Ensure DPDK runtime directories exist
+    // DPDK's mempool/ring creation requires runtime directories to exist
+    // Without them, rte_mempool_create fails with ENOENT
+    const char* dpdk_dirs[] = {
+        "/var/run/dpdk",
+        "/var/run/dpdk/rte", 
+        "/tmp/dpdk",
+        "/tmp/dpdk/rte"
+    };
+    for (const char* dir : dpdk_dirs) {
+        if (mkdir(dir, 0777) == 0) {
+            std::cout << "Created DPDK directory: " << dir << std::endl;
+        }
+        // Ignore EEXIST errors - directory already exists
+    }
     
     // Print hugepage info before SPDK init
     print_hugepage_info("[Pre-init] ");
@@ -167,14 +177,33 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         std::cout << "[DPDK Memory] Could not get socket 0 malloc stats" << std::endl;
     }
     
+    // Test: Try direct DPDK mempool creation to verify DPDK is working
+    rte_errno = 0;
+    struct rte_mempool* test_pool = rte_mempool_create(
+        "test_pool", 256, 64, 0, 0, nullptr, nullptr, nullptr, nullptr, SOCKET_ID_ANY, 0);
+    if (test_pool) {
+        std::cout << "[DPDK Test] Direct mempool creation OK" << std::endl;
+        rte_mempool_free(test_pool);
+    } else {
+        std::cerr << "[DPDK Test] Direct mempool FAILED: rte_errno=" << rte_errno 
+                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+    }
+    
     // Initialize SPDK thread library
     if (g_use_spdk_threads) {
+        // Clear errno before call to get accurate error info
+        errno = 0;
+        rte_errno = 0;
+        
         // Use default mempool size (sufficient for most workloads)
         int rc = spdk_thread_lib_init(nullptr, 0);
         if (rc == 0) {
             std::cout << "SPDK thread library initialized" << std::endl;
         } else {
-            std::cerr << "spdk_thread_lib_init failed (rc=" << rc << ")" << std::endl;
+            std::cerr << "spdk_thread_lib_init failed: rc=" << rc 
+                      << ", errno=" << errno << " (" << strerror(errno) << ")"
+                      << ", rte_errno=" << rte_errno << " (" << rte_strerror(rte_errno) << ")"
+                      << std::endl;
             g_use_spdk_threads = false;
         }
     }
