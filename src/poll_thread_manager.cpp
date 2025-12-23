@@ -589,14 +589,16 @@ int PollThreadManager::start() {
         
         ctx->qpair = spdk_ctx_->create_qpair(per_thread_depth, &opts);
         if (!ctx->qpair) {
-            std::cerr << "Error: Failed to create QPair for thread " << i << std::endl;
-            // Clean up already created threads/qpairs
-            for (auto& t : threads_) {
-                if (t->qpair) {
-                    spdk_ctx_->delete_qpair(t->qpair);
-                }
+            // Server may limit number of I/O queues - use what we have
+            if (i > 0) {
+                std::cout << "  Thread " << i << ": No more queue IDs available (server limit)" << std::endl;
+                std::cout << "  Note: Server limits I/O queues - using " << i << " thread(s)" << std::endl;
+                effective_cores = i; // Use only the threads we could create
+                break; // Exit the loop, use what we have
+            } else {
+                std::cerr << "Error: Failed to create any QPairs" << std::endl;
+                return -1;
             }
-            return -1;
         }
         
         // Poll QPair to establish connection
