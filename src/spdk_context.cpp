@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+// DPDK includes for memory diagnostics
+#include <rte_malloc.h>
+#include <rte_memory.h>
+
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
 namespace xload {
@@ -108,7 +112,7 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
     }
     
-    // Initialize SPDK environment with minimal options (matching SPDK tools)
+    // Initialize SPDK environment with options configured for container/thread pool use
     struct spdk_env_opts opts;
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
@@ -117,9 +121,11 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // -1 means auto-generate a unique ID based on PID
     opts.shm_id = -1;
     
-    // Don't limit memory - let SPDK use what it needs from available hugepages
-    // The thread library mempool needs memory from DPDK's pool
-    // opts.mem_size is left at default (-1 = use all available)
+    // CRITICAL: Explicitly request memory for DPDK heap allocation
+    // The thread library mempool requires memory from DPDK's heap, not just hugepages
+    // Default may not properly reserve heap memory in some container configurations
+    // Request 512MB which is more than enough for thread mempools + DMA buffers
+    opts.mem_size = 512;
     
     // Print hugepage info before SPDK init
     print_hugepage_info("[Pre-init] ");
@@ -135,6 +141,18 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     
     // Print hugepage info after SPDK env init
     print_hugepage_info("[Post-env-init] ");
+    
+    // Print DPDK memory stats to understand heap allocation
+    struct rte_malloc_socket_stats malloc_stats;
+    if (rte_malloc_get_socket_stats(0, &malloc_stats) == 0) {
+        std::cout << "[DPDK Memory] heap_total=" << (malloc_stats.heap_totalsz_bytes / (1024*1024)) << " MB"
+                  << ", heap_alloc=" << (malloc_stats.heap_allocsz_bytes / (1024*1024)) << " MB"
+                  << ", heap_free=" << (malloc_stats.heap_freesz_bytes / (1024*1024)) << " MB"
+                  << ", alloc_count=" << malloc_stats.alloc_count
+                  << std::endl;
+    } else {
+        std::cout << "[DPDK Memory] Could not get socket 0 malloc stats" << std::endl;
+    }
     
     // Initialize SPDK thread library with progressive mempool size attempts
     // The mempool is allocated from DPDK hugepages, so we need to find a size that fits
