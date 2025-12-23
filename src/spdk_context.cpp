@@ -124,9 +124,10 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
     
-    // Use unique shared memory ID to avoid conflicts with other DPDK/SPDK processes
-    // -1 means auto-generate a unique ID based on PID
-    opts.shm_id = -1;
+    // Use fixed shared memory ID for predictable DPDK runtime directory
+    // -1 would auto-generate based on PID, but this can cause issues in containers
+    // Using 0 creates files in /var/run/dpdk/spdk0/ which is more predictable
+    opts.shm_id = 0;
     
     // CRITICAL: Explicitly request memory for DPDK heap allocation
     // The thread library mempool requires memory from DPDK's heap, not just hugepages
@@ -136,18 +137,16 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     
     // CRITICAL: Ensure DPDK runtime directories exist
     // DPDK's mempool/ring creation requires runtime directories to exist
-    // Without them, rte_mempool_create fails with ENOENT
+    // With shm_id=0, DPDK uses file prefix "spdk0" -> /var/run/dpdk/spdk0/
     const char* dpdk_dirs[] = {
         "/var/run/dpdk",
-        "/var/run/dpdk/rte", 
-        "/tmp/dpdk",
-        "/tmp/dpdk/rte"
+        "/var/run/dpdk/spdk0",
+        "/var/run/dpdk/rte"
     };
     for (const char* dir : dpdk_dirs) {
         if (mkdir(dir, 0777) == 0) {
             std::cout << "Created DPDK directory: " << dir << std::endl;
         }
-        // Ignore EEXIST errors - directory already exists
     }
     
     // Print hugepage info before SPDK init
