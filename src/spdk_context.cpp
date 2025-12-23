@@ -1,12 +1,49 @@
 #include "spdk_context.h"
 #include <cstring>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 #include <cstdio>
 #include <cstdlib>
 
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
 namespace xload {
+
+// Helper function to get hugepage info from /proc/meminfo
+static void print_hugepage_info(const char* prefix) {
+    std::ifstream meminfo("/proc/meminfo");
+    if (!meminfo.is_open()) {
+        std::cerr << prefix << "Could not read /proc/meminfo" << std::endl;
+        return;
+    }
+    
+    std::string line;
+    uint64_t hugepages_total = 0, hugepages_free = 0, hugepage_size_kb = 0;
+    
+    while (std::getline(meminfo, line)) {
+        if (line.find("HugePages_Total:") != std::string::npos) {
+            std::istringstream iss(line);
+            std::string key;
+            iss >> key >> hugepages_total;
+        } else if (line.find("HugePages_Free:") != std::string::npos) {
+            std::istringstream iss(line);
+            std::string key;
+            iss >> key >> hugepages_free;
+        } else if (line.find("Hugepagesize:") != std::string::npos) {
+            std::istringstream iss(line);
+            std::string key;
+            iss >> key >> hugepage_size_kb;
+        }
+    }
+    
+    uint64_t total_mb = (hugepages_total * hugepage_size_kb) / 1024;
+    uint64_t free_mb = (hugepages_free * hugepage_size_kb) / 1024;
+    
+    std::cout << prefix << "Hugepages: " << hugepages_free << "/" << hugepages_total 
+              << " free (" << free_mb << "/" << total_mb << " MB), page_size=" 
+              << hugepage_size_kb << " KB" << std::endl;
+}
 
 // Flag to control threading mode - can be set before init()
 static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
@@ -84,6 +121,9 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // The thread library mempool needs memory from DPDK's pool
     // opts.mem_size is left at default (-1 = use all available)
     
+    // Print hugepage info before SPDK init
+    print_hugepage_info("[Pre-init] ");
+    
     // Initialize environment
     std::cout << "Initializing SPDK environment (shm_id=" << opts.shm_id << ")..." << std::endl;
     if (spdk_env_init(&opts) < 0) {
@@ -93,37 +133,51 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     }
     std::cout << "SPDK environment initialized successfully" << std::endl;
     
-    // Initialize SPDK thread library
-    // We need this for multi-threaded operation and proper completion handling
+    // Print hugepage info after SPDK env init
+    print_hugepage_info("[Post-env-init] ");
+    
+    // Initialize SPDK thread library with progressive mempool size attempts
+    // The mempool is allocated from DPDK hugepages, so we need to find a size that fits
+    // Try progressively smaller sizes until one works
     if (g_use_spdk_threads) {
-        // Try the extended version first (has configurable mempool size)
-        // Use smaller mempool size (8192 messages) to conserve hugepage memory
-        // Signature: spdk_thread_lib_init_ext(thread_op_fn, thread_op_supported_fn, ctx_sz, msg_mempool_size)
-        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 8192);
+        // Mempool sizes to try (from largest to smallest)
+        // Each message entry uses ~128 bytes, so:
+        // 65536 = ~8MB, 32768 = ~4MB, 16384 = ~2MB, 8192 = ~1MB, 
+        // 4096 = ~512KB, 2048 = ~256KB, 1024 = ~128KB, 512 = ~64KB
+        const size_t mempool_sizes[] = {65536, 32768, 16384, 8192, 4096, 2048, 1024, 512};
+        const int num_sizes = sizeof(mempool_sizes) / sizeof(mempool_sizes[0]);
+        int rc = -1;
+        
+        for (int i = 0; i < num_sizes; i++) {
+            size_t msg_size = mempool_sizes[i];
+            rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, msg_size);
+            if (rc == 0) {
+                std::cout << "SPDK thread library initialized with mempool_size=" << msg_size << std::endl;
+                break;
+            } else {
+                std::cerr << "spdk_thread_lib_init_ext(msg_size=" << msg_size << ") failed (rc=" << rc << ")" << std::endl;
+            }
+        }
+        
         if (rc != 0) {
-            std::cerr << "Warning: spdk_thread_lib_init_ext failed (rc=" << rc 
-                      << "), trying simple init..." << std::endl;
-            
-            // Fall back to simple initialization
+            // Try the simple initialization (uses default mempool size)
+            std::cerr << "All extended init attempts failed, trying simple init..." << std::endl;
             rc = spdk_thread_lib_init(nullptr, 0);
             if (rc != 0) {
-                std::cerr << "Warning: spdk_thread_lib_init also failed (rc=" << rc 
-                          << "), falling back to workaround mode" << std::endl;
+                std::cerr << "spdk_thread_lib_init also failed (rc=" << rc << ")" << std::endl;
+                std::cerr << "Falling back to single-threaded mode" << std::endl;
+                print_hugepage_info("[After thread init failure] ");
                 g_use_spdk_threads = false;
             }
         }
     }
     
     if (g_use_spdk_threads) {
-        std::cout << "SPDK thread library initialized (multi-threaded mode enabled)" << std::endl;
+        std::cout << "Multi-threaded mode enabled" << std::endl;
         main_thread_ = nullptr;  // Will be set per-thread in PollThreadManager
     } else {
-        // WORKAROUND: Skip SPDK thread creation entirely
-        // We'll use a single-threaded model without SPDK threads
-        // This bypasses the thread library initialization issue completely
         main_thread_ = nullptr;
-        std::cout << "Note: Running in single-threaded mode (workaround mode)" << std::endl;
-        std::cout << "      SPDK threads disabled - using direct I/O submission" << std::endl;
+        std::cout << "Running in single-threaded mode (SPDK thread library not available)" << std::endl;
     }
     
     // Initialize transport ID for NVMe/TCP
