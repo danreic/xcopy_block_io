@@ -9,6 +9,9 @@
 // DPDK includes for memory diagnostics
 #include <rte_malloc.h>
 #include <rte_memory.h>
+#include <rte_mempool.h>
+#include <rte_lcore.h>
+#include <rte_errno.h>
 
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
@@ -154,38 +157,51 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
         std::cout << "[DPDK Memory] Could not get socket 0 malloc stats" << std::endl;
     }
     
-    // Initialize SPDK thread library with progressive mempool size attempts
-    // The mempool is allocated from DPDK hugepages, so we need to find a size that fits
-    // Try progressively smaller sizes until one works
+    // Print DPDK lcore info for debugging thread issues
+    std::cout << "[DPDK Lcores] main_lcore=" << rte_get_main_lcore()
+              << ", lcore_count=" << rte_lcore_count()
+              << std::endl;
+    
+    // Test direct DPDK mempool creation to diagnose the issue
+    std::cout << "[DPDK Test] Attempting direct mempool creation..." << std::endl;
+    struct rte_mempool* test_pool = rte_mempool_create(
+        "test_mempool",           // name
+        256,                      // n (number of elements)
+        128,                      // elt_size (element size)
+        0,                        // cache_size (0 = no per-lcore cache)
+        0,                        // private_data_size
+        nullptr,                  // mp_init
+        nullptr,                  // mp_init_arg
+        nullptr,                  // obj_init
+        nullptr,                  // obj_init_arg
+        SOCKET_ID_ANY,           // socket_id
+        0                         // flags
+    );
+    if (test_pool) {
+        std::cout << "[DPDK Test] Direct mempool creation SUCCEEDED" << std::endl;
+        rte_mempool_free(test_pool);
+    } else {
+        std::cerr << "[DPDK Test] Direct mempool creation FAILED: rte_errno=" << rte_errno 
+                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+    }
+    
+    // Initialize SPDK thread library
     if (g_use_spdk_threads) {
-        // Mempool sizes to try (from largest to smallest)
-        // Each message entry uses ~128 bytes, so:
-        // 65536 = ~8MB, 32768 = ~4MB, 16384 = ~2MB, 8192 = ~1MB, 
-        // 4096 = ~512KB, 2048 = ~256KB, 1024 = ~128KB, 512 = ~64KB
-        const size_t mempool_sizes[] = {65536, 32768, 16384, 8192, 4096, 2048, 1024, 512};
-        const int num_sizes = sizeof(mempool_sizes) / sizeof(mempool_sizes[0]);
-        int rc = -1;
-        
-        for (int i = 0; i < num_sizes; i++) {
-            size_t msg_size = mempool_sizes[i];
-            rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, msg_size);
-            if (rc == 0) {
-                std::cout << "SPDK thread library initialized with mempool_size=" << msg_size << std::endl;
-                break;
-            } else {
-                std::cerr << "spdk_thread_lib_init_ext(msg_size=" << msg_size << ") failed (rc=" << rc << ")" << std::endl;
-            }
-        }
-        
-        if (rc != 0) {
-            // Try the simple initialization (uses default mempool size)
-            std::cerr << "All extended init attempts failed, trying simple init..." << std::endl;
+        // Try with a small mempool size first since we know memory is available
+        int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 4096);
+        if (rc == 0) {
+            std::cout << "SPDK thread library initialized with mempool_size=4096" << std::endl;
+        } else {
+            std::cerr << "spdk_thread_lib_init_ext failed (rc=" << rc << ", errno=" << errno << ")" << std::endl;
+            
+            // Try simple init
             rc = spdk_thread_lib_init(nullptr, 0);
             if (rc != 0) {
                 std::cerr << "spdk_thread_lib_init also failed (rc=" << rc << ")" << std::endl;
-                std::cerr << "Falling back to single-threaded mode" << std::endl;
                 print_hugepage_info("[After thread init failure] ");
                 g_use_spdk_threads = false;
+            } else {
+                std::cout << "SPDK thread library initialized (simple mode)" << std::endl;
             }
         }
     }
