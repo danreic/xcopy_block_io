@@ -177,19 +177,15 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // - no_pci: We don't need local PCI devices for NVMe-oF/TCP
     opts.no_pci = true;
     
-    // Use legacy memory mode - more compatible with SPDK's mempool usage
-    // --legacy-mem uses the older DPDK memory allocation mode
-    // --no-telemetry avoids additional file access issues in containers
-    opts.env_context = const_cast<char*>("--legacy-mem --no-telemetry");
+    // Minimal DPDK configuration - let SPDK/DPDK use defaults
+    // Only disable telemetry to avoid socket file issues in containers
+    opts.env_context = const_cast<char*>("--no-telemetry");
     
-    // Use shm_id = 0 for predictable shared memory prefix
-    opts.shm_id = 0;
+    // Use shm_id = -1 for process-private memory (no shared files needed)
+    opts.shm_id = -1;
     
     // Set core mask to allow multiple cores (0xFF = up to 8 cores)
     opts.core_mask = "0xFF";
-    
-    // Use single-file hugepage segments (more container-friendly)
-    opts.hugepage_single_segments = true;
     
     // Ensure DPDK runtime directories exist just in case
     mkdir("/var/run/dpdk", 0777);
