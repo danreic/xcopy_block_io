@@ -21,6 +21,7 @@ PollThreadContext::PollThreadContext()
     , spdk_thread(nullptr)
     , pthread(nullptr)
     , spdk_ctx(nullptr)
+    , ctrlr_index(0)
     , outstanding_io(0)
     , target_iodepth(0)
     , generator(nullptr)
@@ -281,22 +282,17 @@ int PollThreadManager::poller_func(void* arg) {
     
     // Check if qpair needs reconnection
     if (!ctx->qpair) {
-        // Try to reconnect (only one thread should do this)
-        std::lock_guard<std::mutex> lock(qpair_mutex_);
-        if (!shared_qpair_ && ctx->spdk_ctx) {
-            // This thread will attempt reconnection
-            struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, actual_qpair_depth_);
-            if (new_qpair) {
-                shared_qpair_ = new_qpair;
-                std::cout << "QPair reconnected successfully" << std::endl;
-            } else {
-                // Reconnection failed - will retry next poll
-                usleep(100000); // Wait 100ms before retrying
-                return 1;
-            }
+        // Try to reconnect this thread's QPair on its assigned controller
+        struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, actual_qpair_depth_, ctx->ctrlr_index);
+        if (new_qpair) {
+            ctx->qpair = new_qpair;
+            std::cout << "Thread " << ctx->thread_id << ": QPair reconnected on controller " 
+                      << ctx->ctrlr_index << std::endl;
+        } else {
+            // Reconnection failed - will retry next poll
+            usleep(100000); // Wait 100ms before retrying
+            return 1;
         }
-        // Update this thread's qpair pointer
-        ctx->qpair = shared_qpair_;
     }
     
     // Process completions (non-blocking) - only if qpair is valid
@@ -373,6 +369,9 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     int consecutive_errors = 0;
     const int max_consecutive_errors = 10; // Allow some transient errors
     int submission_count = 0;
+    int reconnect_attempts = 0;  // Per-thread reconnection counter
+    const int max_reconnect_attempts = 10;
+    const int reconnect_delay_ms = 5000;  // 5 seconds between attempts
     
     // Keep-alive: periodically poll admin queue to handle keep-alive commands
     auto last_admin_poll = std::chrono::steady_clock::now();
@@ -385,9 +384,10 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         }
         
         // Poll admin queue for keep-alive (required by NVMe-oF)
+        // Each thread polls the admin queue of its assigned controller
         auto now = std::chrono::steady_clock::now();
         if (now - last_admin_poll >= admin_poll_interval) {
-            struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
+            struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr(ctx->ctrlr_index);
             if (ctrlr) {
                 spdk_nvme_ctrlr_process_admin_completions(ctrlr);
             }
@@ -416,51 +416,39 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                           << ", consecutive=" << consecutive_errors << ")" << std::endl;
                 if (consecutive_errors >= max_consecutive_errors) {
                     std::cerr << "Error: QPair disconnected after " << consecutive_errors 
-                              << " consecutive errors. Attempting to reconnect..." << std::endl;
-                    // Mark QPair as invalid and attempt reconnection
-                    {
-                        std::lock_guard<std::mutex> lock(qpair_mutex_);
-                        if (shared_qpair_) {
-                            // Clean up old qpair
-                            ctx->spdk_ctx->delete_qpair(shared_qpair_);
-                            shared_qpair_ = nullptr;
-                        }
-                        ctx->qpair = nullptr;
-                    }
+                              << " consecutive errors. Freeing QPair..." << std::endl;
+                    // Delete THIS thread's QPair (not shared_qpair_)
+                    ctx->spdk_ctx->delete_qpair(ctx->qpair);
+                    ctx->qpair = nullptr;
+                    reconnect_attempts = 0;  // Reset for this thread
                     // Reconnection will be attempted in next poll cycle
                 }
             } else {
                 if (consecutive_errors > 0) {
                     std::cout << "QPair recovered after " << consecutive_errors << " errors" << std::endl;
                 }
-                consecutive_errors = 0; // Reset error counter on success
+                consecutive_errors = 0;
             }
         } else {
-            // QPair is disconnected - attempt to reconnect
-            static int reconnect_attempts = 0;
-            static const int max_reconnect_attempts = 10;
-            static const int reconnect_delay_ms = 5000;  // 5 seconds between attempts
-            
+            // QPair is disconnected - attempt to reconnect using same controller
             if (reconnect_attempts < max_reconnect_attempts) {
                 reconnect_attempts++;
-                std::cout << "Attempting to reconnect (attempt " << reconnect_attempts 
+                std::cout << "Thread " << ctx->thread_id << ": Reconnecting to controller " 
+                          << ctx->ctrlr_index << " (attempt " << reconnect_attempts 
                           << "/" << max_reconnect_attempts << ")..." << std::endl;
                 
                 // Wait before reconnecting
                 usleep(reconnect_delay_ms * 1000);
                 
-                // Try to create a new QPair
-                std::lock_guard<std::mutex> lock(qpair_mutex_);
-                if (!shared_qpair_) {
-                    shared_qpair_ = ctx->spdk_ctx->create_qpair(ctx->target_iodepth);
-                    if (shared_qpair_) {
-                        ctx->qpair = shared_qpair_;
-                        consecutive_errors = 0;
-                        reconnect_attempts = 0;
-                        std::cout << "Reconnection successful!" << std::endl;
-                    } else {
-                        std::cerr << "Reconnection failed, will retry..." << std::endl;
-                    }
+                // Try to create a new QPair on the same controller
+                struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, ctx->target_iodepth, ctx->ctrlr_index);
+                if (new_qpair) {
+                    ctx->qpair = new_qpair;
+                    consecutive_errors = 0;
+                    reconnect_attempts = 0;
+                    std::cout << "Thread " << ctx->thread_id << ": Reconnection successful!" << std::endl;
+                } else {
+                    std::cerr << "Thread " << ctx->thread_id << ": Reconnection failed, will retry..." << std::endl;
                 }
             } else {
                 // Max reconnection attempts reached - wait and continue
@@ -592,6 +580,7 @@ int PollThreadManager::start() {
             
             ctx->qpair = spdk_ctx_->create_qpair(per_thread_depth, &opts, ctrlr_idx);
             if (ctx->qpair) {
+                ctx->ctrlr_index = ctrlr_idx;  // Track which controller this thread uses
                 qpairs_per_ctrlr[ctrlr_idx]++;
                 qpair_created = true;
             } else {
@@ -715,25 +704,25 @@ void PollThreadManager::wait() {
     }
 }
 
-struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth) {
+struct spdk_nvme_qpair* PollThreadManager::reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth, size_t ctrlr_index) {
     if (!ctx || !ctx->spdk_ctx) {
         return nullptr;
     }
     
-    struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr();
+    struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr(ctrlr_index);
     if (!ctrlr) {
-        std::cerr << "Error: No controller available for reconnection" << std::endl;
+        std::cerr << "Error: No controller available for reconnection (index=" << ctrlr_index << ")" << std::endl;
         return nullptr;
     }
     
-    // Create new qpair with same options
+    // Create new qpair with same options on the specific controller
     spdk_nvme_io_qpair_opts opts;
     spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
     opts.qprio = SPDK_NVME_QPRIO_URGENT;
     opts.io_queue_size = qpair_depth;
     
-    std::cout << "Reconnecting QPair with queue depth: " << qpair_depth << std::endl;
-    struct spdk_nvme_qpair* new_qpair = ctx->spdk_ctx->create_qpair(qpair_depth, &opts);
+    std::cout << "Reconnecting QPair on controller " << ctrlr_index << " with queue depth: " << qpair_depth << std::endl;
+    struct spdk_nvme_qpair* new_qpair = ctx->spdk_ctx->create_qpair(qpair_depth, &opts, ctrlr_index);
     if (!new_qpair) {
         std::cerr << "Error: Failed to create new QPair for reconnection" << std::endl;
         return nullptr;

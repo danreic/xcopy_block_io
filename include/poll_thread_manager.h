@@ -25,6 +25,7 @@ struct PollThreadContext {
     struct spdk_thread* spdk_thread;
     std::thread* pthread;
     SpdkContext* spdk_ctx;
+    size_t ctrlr_index;  // Which controller this thread uses (for multi-path)
     
     // I/O state
     std::atomic<uint32_t> outstanding_io;
@@ -100,7 +101,7 @@ private:
     static void handle_backpressure(PollThreadContext* ctx, const XcopyOperation& op);
     
     // Reconnect qpair (called when disconnection is detected)
-    static struct spdk_nvme_qpair* reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth);
+    static struct spdk_nvme_qpair* reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth, size_t ctrlr_index);
     
     // Shared qpair for all threads (protected by mutex)
     static struct spdk_nvme_qpair* shared_qpair_;
