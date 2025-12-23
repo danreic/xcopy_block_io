@@ -511,16 +511,14 @@ int PollThreadManager::start() {
     }
     
     // Check if SPDK threads are enabled
-    // If not, we MUST use single-threaded mode to avoid race conditions
-    // Multiple pthreads sharing a QPair without SPDK thread synchronization
-    // causes command ID confusion and TCP errors
+    // If not, we use pthread-based multi-threading where each thread gets its own QPair
+    // This avoids race conditions since each thread has exclusive access to its QPair
     bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
     uint32_t effective_cores = num_cores_;
     
     if (!use_spdk_threads && num_cores_ > 1) {
-        std::cout << "Warning: SPDK threads not available, forcing single-threaded mode" << std::endl;
-        std::cout << "         (multi-threading requires SPDK thread library)" << std::endl;
-        effective_cores = 1;
+        std::cout << "Using pthread-based multi-threading with per-thread QPairs" << std::endl;
+        std::cout << "  (each thread gets its own dedicated QPair - no SPDK threads needed)" << std::endl;
     }
     
     threads_.clear();
@@ -543,141 +541,119 @@ int PollThreadManager::start() {
         return -1;
     }
     
-    // Create a single shared QPair for all threads (workaround mode)
     // Get controller's maximum queue depth capability
     const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr);
     uint32_t max_queue_depth = cdata->maxcmd; // Maximum number of commands per queue
     
-    // Use the minimum of requested depth and controller's maximum
-    // This ensures we don't exceed the server's capabilities
-    uint32_t qpair_depth = iodepth_;
-    if (qpair_depth > max_queue_depth) {
-        std::cout << "Note: Requested queue depth (" << iodepth_ 
+    // Calculate per-thread queue depth
+    // Each thread gets its own QPair with a portion of the total requested depth
+    uint32_t per_thread_depth = iodepth_ / effective_cores;
+    if (per_thread_depth < 4) per_thread_depth = 4; // Minimum depth per thread
+    
+    if (per_thread_depth > max_queue_depth) {
+        std::cout << "Note: Per-thread queue depth (" << per_thread_depth 
                   << ") exceeds controller maximum (" << max_queue_depth << ")" << std::endl;
         std::cout << "      Using maximum supported depth: " << max_queue_depth << std::endl;
-        qpair_depth = max_queue_depth;
+        per_thread_depth = max_queue_depth;
     }
     
-    // Also check for reasonable upper limit (some controllers report very high values)
-    // Cap at 1024 as a practical limit for most NVMe/TCP targets
-    if (qpair_depth > 1024) {
-        std::cout << "Note: Controller reports very high queue depth (" << max_queue_depth 
-                  << "), capping at 1024 for practical purposes" << std::endl;
-        qpair_depth = 1024;
+    // Cap at 1024 as a practical limit
+    if (per_thread_depth > 1024) {
+        per_thread_depth = 1024;
     }
     
-    spdk_nvme_io_qpair_opts opts;
-    spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-    opts.qprio = SPDK_NVME_QPRIO_URGENT;
-    opts.io_queue_size = qpair_depth;
+    actual_qpair_depth_ = per_thread_depth;
     
-    std::cout << "Creating shared QPair with queue depth: " << qpair_depth << std::endl;
-    struct spdk_nvme_qpair* shared_qpair = spdk_ctx_->create_qpair(qpair_depth, &opts);
-    if (!shared_qpair) {
-        std::cerr << "Error: Failed to create shared QPair with depth " << qpair_depth << std::endl;
-        std::cerr << "       Try reducing --iodepth (e.g., 256 or 128)" << std::endl;
-        return -1;
-    }
+    std::cout << "Creating " << effective_cores << " QPairs (depth " 
+              << per_thread_depth << " each, total depth " 
+              << (per_thread_depth * effective_cores) << ")" << std::endl;
     
-    // CRITICAL: QPair creation is asynchronous for NVMe/TCP
-    // We MUST poll the QPair to establish the connection
-    // Without SPDK threads, we need to poll manually from the main thread
-    std::cout << "Polling QPair connection..." << std::endl;
-    int poll_count = 0;
-    const int max_polls = 10000; // Max 10 seconds of polling (10000 * 1ms)
-    bool connected = false;
-    
-    while (poll_count < max_polls) {
-        // Process completions to advance connection state
-        // This is critical - the connection won't establish without polling
-        int rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
-        
-        // Negative return means error or connection not ready yet
-        // Zero or positive means we processed completions (connection may be ready)
-        if (rc >= 0) {
-            // Connection might be ready - verify by checking if we can process more
-            // without errors
-            usleep(100); // Small delay
-            rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
-            if (rc >= 0) {
-                // Connection appears established
-                connected = true;
-                break;
-            }
-        } else if (rc == -ENXIO || rc == -ENODEV) {
-            // These errors suggest connection failed permanently
-            std::cerr << "Error: QPair connection failed permanently (rc=" << rc << ")" << std::endl;
-            spdk_ctx_->delete_qpair(shared_qpair);
-            return -1;
-        }
-        
-        // Connection still establishing - continue polling
-        usleep(1000); // 1ms delay between polls
-        poll_count++;
-        
-        // Print progress every second
-        if (poll_count % 1000 == 0) {
-            std::cout << "  Still connecting... (" << (poll_count / 1000) << "s)" << std::endl;
-        }
-    }
-    
-    if (!connected) {
-        std::cerr << "Error: QPair connection failed to establish after " 
-                  << (max_polls / 1000) << " seconds" << std::endl;
-        std::cerr << "       This may indicate:" << std::endl;
-        std::cerr << "       - Target is not accepting connections" << std::endl;
-        std::cerr << "       - Queue depth too high (try --iodepth 128 or 256)" << std::endl;
-        std::cerr << "       - Network connectivity issues" << std::endl;
-        spdk_ctx_->delete_qpair(shared_qpair);
-        return -1;
-    }
-    
-    std::cout << "QPair connection established after " << (poll_count * 1000 / 1000) 
-              << " ms" << std::endl;
-    
-    // CRITICAL: Wait a bit more and poll a few times to ensure QPair is fully ready
-    // Sometimes the connection appears established but isn't ready for I/O yet
-    std::cout << "Verifying QPair is ready for I/O..." << std::endl;
-    for (int i = 0; i < 100; i++) {
-        int rc = spdk_nvme_qpair_process_completions(shared_qpair, 0);
-        if (rc < 0 && rc != -ENXIO && rc != -ENODEV) {
-            // Transient error - continue polling
-        }
-        usleep(1000); // 1ms
-    }
-    std::cout << "QPair ready for I/O" << std::endl;
-    
-    // Store the actual QPair depth for later use (static for reconnection)
-    actual_qpair_depth_ = qpair_depth;
-    shared_qpair_ = shared_qpair; // Store in static for reconnection
-    
-    // Create threads - all will share the same QPair
+    // Create threads - each with its own dedicated QPair
     for (uint32_t i = 0; i < effective_cores; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
         ctx->spdk_ctx = spdk_ctx_;
-        // Distribute the actual QPair depth across threads (not the requested depth)
-        // This ensures we don't try to submit more I/O than the QPair can handle
-        ctx->target_iodepth = actual_qpair_depth_ / effective_cores;
+        ctx->target_iodepth = per_thread_depth;
         ctx->generator = generator_;
         ctx->lba_mgr = lba_mgr_;
         ctx->range_size = range_size_;
         ctx->stats = stats_;
         ctx->should_stop = false;
-        ctx->spdk_thread = nullptr; // No SPDK thread in workaround mode
-        ctx->qpair = shared_qpair; // All threads share the same QPair
+        ctx->spdk_thread = nullptr;
         
-        // Create pthread
+        // Create dedicated QPair for this thread
+        spdk_nvme_io_qpair_opts opts;
+        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
+        opts.qprio = SPDK_NVME_QPRIO_URGENT;
+        opts.io_queue_size = per_thread_depth;
+        
+        ctx->qpair = spdk_ctx_->create_qpair(per_thread_depth, &opts);
+        if (!ctx->qpair) {
+            std::cerr << "Error: Failed to create QPair for thread " << i << std::endl;
+            // Clean up already created threads/qpairs
+            for (auto& t : threads_) {
+                if (t->qpair) {
+                    spdk_ctx_->delete_qpair(t->qpair);
+                }
+            }
+            return -1;
+        }
+        
+        // Poll QPair to establish connection
+        std::cout << "  Thread " << i << ": Connecting QPair..." << std::flush;
+        int poll_count = 0;
+        const int max_polls = 5000; // 5 seconds max per QPair
+        bool connected = false;
+        
+        while (poll_count < max_polls) {
+            int rc = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+            if (rc >= 0) {
+                usleep(100);
+                rc = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+                if (rc >= 0) {
+                    connected = true;
+                    break;
+                }
+            } else if (rc == -ENXIO || rc == -ENODEV) {
+                std::cerr << " FAILED (rc=" << rc << ")" << std::endl;
+                spdk_ctx_->delete_qpair(ctx->qpair);
+                for (auto& t : threads_) {
+                    if (t->qpair) spdk_ctx_->delete_qpair(t->qpair);
+                }
+                return -1;
+            }
+            usleep(1000);
+            poll_count++;
+        }
+        
+        if (!connected) {
+            std::cerr << " TIMEOUT" << std::endl;
+            spdk_ctx_->delete_qpair(ctx->qpair);
+            for (auto& t : threads_) {
+                if (t->qpair) spdk_ctx_->delete_qpair(t->qpair);
+            }
+            return -1;
+        }
+        
+        // Brief verification poll
+        for (int j = 0; j < 10; j++) {
+            spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+            usleep(1000);
+        }
+        
+        std::cout << " OK" << std::endl;
+        
+        // Create pthread for this context
         ctx->pthread = new std::thread(thread_func, ctx.get());
-        
         threads_.push_back(std::move(ctx));
     }
     
     if (threads_.empty()) {
         std::cerr << "Error: Failed to create any threads" << std::endl;
-        spdk_ctx_->delete_qpair(shared_qpair);
         return -1;
     }
+    
+    std::cout << "All " << threads_.size() << " threads started with dedicated QPairs" << std::endl;
     
     running_ = true;
     return 0;
@@ -704,17 +680,16 @@ void PollThreadManager::wait() {
         }
     }
     
-    // Cleanup shared QPair after all threads are done
+    // Cleanup each thread's QPair
     {
         std::lock_guard<std::mutex> lock(qpair_mutex_);
-        if (shared_qpair_) {
-            spdk_ctx_->delete_qpair(shared_qpair_);
-            shared_qpair_ = nullptr;
-        }
-        // Clear QPair from all contexts
         for (auto& ctx : threads_) {
-            ctx->qpair = nullptr;
+            if (ctx->qpair) {
+                spdk_ctx_->delete_qpair(ctx->qpair);
+                ctx->qpair = nullptr;
+            }
         }
+        shared_qpair_ = nullptr; // Clear legacy shared reference
     }
 }
 
