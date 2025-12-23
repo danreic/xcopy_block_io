@@ -11,6 +11,8 @@
 #include <rte_errno.h>
 #include <rte_malloc.h>
 #include <rte_version.h>
+#include <rte_memzone.h>
+#include <rte_lcore.h>
 
 // SPDK thread library is already declared in spdk/thread.h (included via spdk_context.h)
 
@@ -22,10 +24,23 @@ static bool g_use_spdk_threads = true;  // Default: try to use SPDK threads
 // Try to diagnose and fix DPDK mempool issues in containers
 static bool diagnose_and_fix_mempool_issue() {
     std::cout << "[DPDK] Version: " << rte_version() << std::endl;
+    std::cout << "[DPDK] Main lcore: " << rte_get_main_lcore() 
+              << ", lcore_count: " << rte_lcore_count() << std::endl;
     
-    // Check if we can create a simple ring (mempool uses rings internally)
+    // Check if we can create a memzone directly (lowest level allocation)
     rte_errno = 0;
-    struct rte_ring* test_ring = rte_ring_create("test_ring", 64, SOCKET_ID_ANY, 0);
+    const struct rte_memzone* mz = rte_memzone_reserve("test_mz", 4096, 0, 0);
+    if (mz) {
+        std::cout << "[DPDK] Memzone creation OK (addr=" << mz->addr << ")" << std::endl;
+        rte_memzone_free(mz);
+    } else {
+        std::cerr << "[DPDK] Memzone creation FAILED: rte_errno=" << rte_errno 
+                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+    }
+    
+    // Check if we can create a simple ring
+    rte_errno = 0;
+    struct rte_ring* test_ring = rte_ring_create("test_ring", 64, 0, 0);
     if (test_ring) {
         std::cout << "[DPDK] Ring creation OK" << std::endl;
         rte_ring_free(test_ring);
@@ -35,50 +50,55 @@ static bool diagnose_and_fix_mempool_issue() {
         return false;
     }
     
-    // Step-by-step mempool creation to find exactly where it fails
+    // Try mempool with explicit socket 0 (not SOCKET_ID_ANY which is -1)
     rte_errno = 0;
-    
-    // Step 1: Create empty mempool
     struct rte_mempool* test_pool = rte_mempool_create_empty(
         "test_pool",           // name
         256,                   // n (number of elements)
         64,                    // elt_size
-        0,                     // cache_size
+        0,                     // cache_size (0 = no per-lcore cache)
         0,                     // private_data_size
-        SOCKET_ID_ANY,         // socket_id
+        0,                     // socket_id = 0 (explicit, not SOCKET_ID_ANY)
         0                      // flags
     );
     
     if (!test_pool) {
-        std::cerr << "[DPDK] Mempool create_empty FAILED: rte_errno=" << rte_errno 
+        std::cerr << "[DPDK] Mempool create_empty FAILED (socket=0): rte_errno=" << rte_errno 
                   << " (" << rte_strerror(rte_errno) << ")" << std::endl;
-        return false;
+        
+        // Try with SOCKET_ID_ANY as fallback
+        rte_errno = 0;
+        test_pool = rte_mempool_create_empty(
+            "test_pool2", 256, 64, 0, 0, SOCKET_ID_ANY, 0);
+        if (!test_pool) {
+            std::cerr << "[DPDK] Mempool create_empty FAILED (SOCKET_ID_ANY): rte_errno=" << rte_errno 
+                      << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+            return false;
+        }
     }
     std::cout << "[DPDK] Mempool create_empty OK" << std::endl;
     
-    // Step 2: Set mempool ops (this is often where container issues appear)
+    // Set mempool ops
     rte_errno = 0;
     int rc = rte_mempool_set_ops_byname(test_pool, "ring_mp_mc", nullptr);
     if (rc != 0) {
         std::cerr << "[DPDK] Mempool set_ops FAILED: rc=" << rc 
-                  << ", rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+                  << ", rte_errno=" << rte_errno << std::endl;
         rte_mempool_free(test_pool);
         return false;
     }
-    std::cout << "[DPDK] Mempool set_ops OK (ring_mp_mc)" << std::endl;
+    std::cout << "[DPDK] Mempool set_ops OK" << std::endl;
     
-    // Step 3: Populate the mempool (allocate actual memory)
+    // Populate the mempool
     rte_errno = 0;
     rc = rte_mempool_populate_default(test_pool);
     if (rc < 0) {
         std::cerr << "[DPDK] Mempool populate FAILED: rc=" << rc 
-                  << ", rte_errno=" << rte_errno 
-                  << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+                  << ", rte_errno=" << rte_errno << std::endl;
         rte_mempool_free(test_pool);
         return false;
     }
-    std::cout << "[DPDK] Mempool populate OK (populated " << rc << " objects)" << std::endl;
+    std::cout << "[DPDK] Mempool populate OK (" << rc << " objects)" << std::endl;
     
     rte_mempool_free(test_pool);
     std::cout << "[DPDK] Full mempool test PASSED" << std::endl;
