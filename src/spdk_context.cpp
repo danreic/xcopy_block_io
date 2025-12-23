@@ -144,9 +144,9 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     // Container-friendly options:
     // - no_pci: We don't need local PCI devices for NVMe-oF/TCP
     // - hugepage_single_segments: Use single file segments (more compatible in containers)
+    // Note: hugepage_single_segments is NOT compatible with unlink_hugepage
     opts.no_pci = true;
     opts.hugepage_single_segments = true;
-    opts.unlink_hugepage = true;  // Cleanup hugepage files on exit
     
     // Ensure DPDK runtime directories exist (silently ignore if they already exist)
     mkdir("/var/run/dpdk", 0777);
