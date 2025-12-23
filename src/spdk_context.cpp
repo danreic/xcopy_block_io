@@ -47,12 +47,13 @@ static bool check_dpdk_mempool() {
 }
 
 SpdkContext::SpdkContext()
-    : ctrlr_(nullptr)
+    : ctrlrs_()
+    , trids_()
     , initialized_(false)
     , hostnqn_("")
     , main_thread_(nullptr)
+    , current_ctrlr_(nullptr)
 {
-    memset(&trid_, 0, sizeof(trid_));
 }
 
 SpdkContext::~SpdkContext() {
@@ -62,9 +63,7 @@ SpdkContext::~SpdkContext() {
 bool SpdkContext::probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
                            struct spdk_nvme_ctrlr_opts* opts) {
     SpdkContext* ctx = static_cast<SpdkContext*>(cb_ctx);
-    
-    // Copy transport ID
-    memcpy(&ctx->trid_, trid, sizeof(*trid));
+    (void)trid;
     
     // Set controller options
     if (opts) {
@@ -87,21 +86,24 @@ void SpdkContext::attach_cb(void* cb_ctx, const struct spdk_nvme_transport_id* t
     (void)opts;
     
     SpdkContext* ctx = static_cast<SpdkContext*>(cb_ctx);
-    ctx->ctrlr_ = ctrlr;
+    ctx->current_ctrlr_ = ctrlr;  // Store for the caller to add to ctrlrs_
 }
 
-int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
+int SpdkContext::init(const std::vector<std::string>& traddrs, const std::string& trsvcid,
                       const std::string& hostnqn, const std::string& subnqn) {
     if (initialized_) {
         return 0;
+    }
+    
+    if (traddrs.empty()) {
+        std::cerr << "Error: No target addresses provided" << std::endl;
+        return -1;
     }
     
     // Store hostnqn for use in probe callback
     hostnqn_ = hostnqn;
     
     // Set hostnqn via environment variable BEFORE spdk_env_init()
-    // This ensures SPDK reads the correct Host NQN during initialization
-    // However, we'll also set it in controller options to ensure it's used
     if (!hostnqn.empty()) {
         setenv("SPDK_NVME_HOSTNQN", hostnqn.c_str(), 1);
     }
@@ -115,23 +117,13 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     opts.mem_size = 512;
     
     // Container-friendly options:
-    // - no_pci: We don't need local PCI devices for NVMe-oF/TCP
     opts.no_pci = true;
-    
-    // Minimal DPDK configuration - let SPDK/DPDK use defaults
-    // Only disable telemetry to avoid socket file issues in containers
     opts.env_context = const_cast<char*>("--no-telemetry");
-    
-    // Use shm_id = -1 for process-private memory (no shared files needed)
     opts.shm_id = -1;
-    
-    // Set core mask to allow multiple cores (0xFF = up to 8 cores)
     opts.core_mask = "0xFF";
     
-    // Ensure DPDK runtime directories exist just in case
     mkdir("/var/run/dpdk", 0777);
     
-    // Initialize environment
     if (spdk_env_init(&opts) < 0) {
         std::cerr << "Failed to initialize SPDK environment" << std::endl;
         std::cerr << "Hint: Check hugepages availability with 'cat /proc/meminfo | grep HugePages'" << std::endl;
@@ -144,97 +136,97 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     
     // Initialize SPDK thread library
     if (g_use_spdk_threads && mempool_works) {
-        // Try with small mempool size first (works better in containers)
-        // The extended init allows specifying mempool size explicitly
         int rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 1024);
-        if (rc == 0) {
-            std::cout << "SPDK thread library initialized (mempool_size=1024)" << std::endl;
-        } else {
-            // Try with even smaller mempool
+        if (rc != 0) {
             rc = spdk_thread_lib_init_ext(nullptr, nullptr, 0, 256);
-            if (rc == 0) {
-                std::cout << "SPDK thread library initialized (mempool_size=256)" << std::endl;
-            } else {
-                // Try default init as last resort
+            if (rc != 0) {
                 rc = spdk_thread_lib_init(nullptr, 0);
-                if (rc == 0) {
-                    std::cout << "SPDK thread library initialized (default)" << std::endl;
-                } else {
-                    std::cerr << "SPDK thread library init failed (rc=" << rc << ")" << std::endl;
-                    std::cerr << "  rte_errno=" << rte_errno << " (" << rte_strerror(rte_errno) << ")" << std::endl;
+                if (rc != 0) {
                     g_use_spdk_threads = false;
                 }
             }
         }
     } else if (g_use_spdk_threads && !mempool_works) {
-        // DPDK mempool issue - fall back to pthread-based multi-threading
         g_use_spdk_threads = false;
     }
     
     if (g_use_spdk_threads) {
         std::cout << "SPDK thread library ENABLED" << std::endl;
     } else {
-        // Note: pthread-based multi-threading still works without SPDK threads
-        // Each thread gets its own QPair - no SPDK thread library needed
         std::cout << "Using pthread-based multi-threading (SPDK threads unavailable)" << std::endl;
     }
     main_thread_ = nullptr;
-    
-    // Initialize transport ID for NVMe/TCP
-    memset(&trid_, 0, sizeof(trid_));
-    trid_.trtype = SPDK_NVME_TRANSPORT_TCP;
-    trid_.adrfam = SPDK_NVMF_ADRFAM_IPV4;  // Set address family to IPv4
-    
-    if (traddr.length() >= sizeof(trid_.traddr)) {
-        std::cerr << "Transport address too long" << std::endl;
-        return -1;
-    }
-    strncpy(trid_.traddr, traddr.c_str(), sizeof(trid_.traddr) - 1);
-    
-    if (trsvcid.length() >= sizeof(trid_.trsvcid)) {
-        std::cerr << "Service ID too long" << std::endl;
-        return -1;
-    }
-    strncpy(trid_.trsvcid, trsvcid.c_str(), sizeof(trid_.trsvcid) - 1);
-    
-    if (!subnqn.empty() && subnqn.length() < sizeof(trid_.subnqn)) {
-        strncpy(trid_.subnqn, subnqn.c_str(), sizeof(trid_.subnqn) - 1);
-    }
     
     // Check if TCP transport is available
     const char* tcp_name = spdk_nvme_transport_id_trtype_str(SPDK_NVME_TRANSPORT_TCP);
     if (!tcp_name || strcmp(tcp_name, "Unknown") == 0) {
         std::cerr << "Error: NVMe/TCP transport is not available" << std::endl;
-        std::cerr << "Note: Ensure SPDK was built with NVMe/TCP transport support" << std::endl;
         return -1;
     }
     
-    // Check if transport is registered/available
-    // In SPDK, transports should be auto-registered, but we'll verify
     if (!spdk_nvme_transport_available(SPDK_NVME_TRANSPORT_TCP)) {
         std::cerr << "Error: NVMe/TCP transport is not registered" << std::endl;
-        std::cerr << "Note: The transport may need to be explicitly registered" << std::endl;
-        std::cerr << "      or SPDK may need to be rebuilt with TCP support" << std::endl;
         return -1;
     }
     
-    // Probe and attach using standard API
-    if (spdk_nvme_probe(&trid_, this, probe_cb, attach_cb, nullptr) != 0) {
-        std::cerr << "Failed to probe for NVMe controllers" << std::endl;
-        std::cerr << "Transport: " << tcp_name << std::endl;
-        std::cerr << "Address: " << traddr << ":" << trsvcid << std::endl;
-        if (!subnqn.empty()) {
-            std::cerr << "Subsystem NQN: " << subnqn << std::endl;
+    // Connect to each target address (multi-path)
+    std::cout << "Connecting to " << traddrs.size() << " target address(es)..." << std::endl;
+    
+    for (size_t i = 0; i < traddrs.size(); i++) {
+        const std::string& traddr = traddrs[i];
+        
+        // Initialize transport ID for this address
+        struct spdk_nvme_transport_id trid;
+        memset(&trid, 0, sizeof(trid));
+        trid.trtype = SPDK_NVME_TRANSPORT_TCP;
+        trid.adrfam = SPDK_NVMF_ADRFAM_IPV4;
+        
+        if (traddr.length() >= sizeof(trid.traddr)) {
+            std::cerr << "Transport address too long: " << traddr << std::endl;
+            continue;
         }
+        strncpy(trid.traddr, traddr.c_str(), sizeof(trid.traddr) - 1);
+        
+        if (trsvcid.length() >= sizeof(trid.trsvcid)) {
+            std::cerr << "Service ID too long" << std::endl;
+            continue;
+        }
+        strncpy(trid.trsvcid, trsvcid.c_str(), sizeof(trid.trsvcid) - 1);
+        
+        if (!subnqn.empty() && subnqn.length() < sizeof(trid.subnqn)) {
+            strncpy(trid.subnqn, subnqn.c_str(), sizeof(trid.subnqn) - 1);
+        }
+        
+        // Clear current controller before probe
+        current_ctrlr_ = nullptr;
+        
+        // Probe and attach
+        std::cout << "  [" << (i + 1) << "/" << traddrs.size() << "] " << traddr << ":" << trsvcid << "... " << std::flush;
+        
+        if (spdk_nvme_probe(&trid, this, probe_cb, attach_cb, nullptr) != 0) {
+            std::cerr << "FAILED (probe error)" << std::endl;
+            continue;
+        }
+        
+        if (!current_ctrlr_) {
+            std::cerr << "FAILED (no controller)" << std::endl;
+            continue;
+        }
+        
+        // Successfully connected - add to our list
+        ctrlrs_.push_back(current_ctrlr_);
+        trids_.push_back(trid);
+        std::cout << "OK" << std::endl;
+    }
+    
+    if (ctrlrs_.empty()) {
+        std::cerr << "Error: Failed to connect to any target" << std::endl;
         return -1;
     }
     
-    if (!ctrlr_) {
-        std::cerr << "No NVMe controller found" << std::endl;
-        return -1;
-    }
+    std::cout << "Connected to " << ctrlrs_.size() << " controller(s)" << std::endl;
     
-    // Discover namespaces
+    // Discover namespaces (from first controller - all should have same namespaces)
     discover_namespaces();
     
     initialized_ = true;
@@ -244,16 +236,19 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
 void SpdkContext::discover_namespaces() {
     namespaces_.clear();
     
-    if (!ctrlr_) {
+    if (ctrlrs_.empty()) {
         return;
     }
     
+    // Use first controller (all controllers have same namespaces for same subsystem)
+    struct spdk_nvme_ctrlr* ctrlr = ctrlrs_[0];
+    
     // Iterate through all namespaces
-    for (uint32_t nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr_);
+    for (uint32_t nsid = spdk_nvme_ctrlr_get_first_active_ns(ctrlr);
          nsid != 0;
-         nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr_, nsid)) {
+         nsid = spdk_nvme_ctrlr_get_next_active_ns(ctrlr, nsid)) {
         
-        struct spdk_nvme_ns* ns = spdk_nvme_ctrlr_get_ns(ctrlr_, nsid);
+        struct spdk_nvme_ns* ns = spdk_nvme_ctrlr_get_ns(ctrlr, nsid);
         if (!ns) {
             continue;
         }
@@ -270,10 +265,10 @@ void SpdkContext::discover_namespaces() {
 }
 
 struct spdk_nvme_ns* SpdkContext::get_ns(uint32_t nsid) const {
-    if (!ctrlr_) {
+    if (ctrlrs_.empty()) {
         return nullptr;
     }
-    return spdk_nvme_ctrlr_get_ns(ctrlr_, nsid);
+    return spdk_nvme_ctrlr_get_ns(ctrlrs_[0], nsid);
 }
 
 const NamespaceInfo* SpdkContext::get_ns_info(uint32_t nsid) const {
@@ -286,50 +281,59 @@ const NamespaceInfo* SpdkContext::get_ns_info(uint32_t nsid) const {
 }
 
 bool SpdkContext::supports_cross_namespace_copy() const {
-    if (!ctrlr_) {
+    if (ctrlrs_.empty()) {
         return false;
     }
     
     // Check if controller supports Simple Copy Command (SCC)
-    // Check for TP4130 support (cross-namespace copy)
-    // This is indicated by the SCCS (Simple Copy Command Support) bit
-    // and the ability to specify different source NSIDs in copy range descriptors
     // For now, we'll assume support if SCC is available
-    // A more thorough check would examine the Identify Controller data structure
-    // const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr_);
-    
     return true; // Simplified - should check actual controller capabilities
 }
 
 struct spdk_nvme_qpair* SpdkContext::create_qpair(uint32_t queue_depth,
-                                                   spdk_nvme_io_qpair_opts* opts) {
-    if (!ctrlr_) {
+                                                   spdk_nvme_io_qpair_opts* opts,
+                                                   size_t ctrlr_index) {
+    if (ctrlr_index >= ctrlrs_.size()) {
         return nullptr;
     }
     
+    struct spdk_nvme_ctrlr* ctrlr = ctrlrs_[ctrlr_index];
+    
     spdk_nvme_io_qpair_opts default_opts;
     if (!opts) {
-        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr_, &default_opts, sizeof(default_opts));
+        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &default_opts, sizeof(default_opts));
         opts = &default_opts;
     }
     
     opts->qprio = SPDK_NVME_QPRIO_URGENT;
     opts->io_queue_size = queue_depth;
     
-    return spdk_nvme_ctrlr_alloc_io_qpair(ctrlr_, opts, sizeof(*opts));
+    return spdk_nvme_ctrlr_alloc_io_qpair(ctrlr, opts, sizeof(*opts));
 }
 
 void SpdkContext::delete_qpair(struct spdk_nvme_qpair* qpair) {
-    if (qpair && ctrlr_) {
-        spdk_nvme_ctrlr_free_io_qpair(qpair);
+    if (!qpair) {
+        return;
+    }
+    // Need to find which controller owns this qpair
+    // For simplicity, just free it - SPDK will handle it
+    for (auto ctrlr : ctrlrs_) {
+        if (ctrlr) {
+            spdk_nvme_ctrlr_free_io_qpair(qpair);
+            return;
+        }
     }
 }
 
 void SpdkContext::cleanup() {
-    if (ctrlr_) {
-        spdk_nvme_detach(ctrlr_);
-        ctrlr_ = nullptr;
+    // Detach all controllers
+    for (auto ctrlr : ctrlrs_) {
+        if (ctrlr) {
+            spdk_nvme_detach(ctrlr);
+        }
     }
+    ctrlrs_.clear();
+    trids_.clear();
     
     namespaces_.clear();
     initialized_ = false;

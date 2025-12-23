@@ -8,7 +8,7 @@
 namespace xload {
 
 Config::Config()
-    : traddr("")
+    : traddrs()
     , trsvcid("4420")
     , hostnqn("")
     , subnqn("")
@@ -28,8 +28,8 @@ Config::Config()
 }
 
 bool Config::validate() const {
-    if (traddr.empty()) {
-        std::cerr << "Error: --traddr is required" << std::endl;
+    if (traddrs.empty()) {
+        std::cerr << "Error: --traddr is required (can specify multiple for multi-path)" << std::endl;
         return false;
     }
     
@@ -63,7 +63,12 @@ bool Config::validate() const {
 
 void Config::print() const {
     std::cout << "Configuration:" << std::endl;
-    std::cout << "  Target Address: " << traddr << std::endl;
+    std::cout << "  Target Address(es): ";
+    for (size_t i = 0; i < traddrs.size(); i++) {
+        if (i > 0) std::cout << ", ";
+        std::cout << traddrs[i];
+    }
+    std::cout << " (" << traddrs.size() << " path" << (traddrs.size() > 1 ? "s" : "") << ")" << std::endl;
     std::cout << "  Service ID: " << trsvcid << std::endl;
     if (!hostnqn.empty()) {
         std::cout << "  Host NQN: " << hostnqn << std::endl;
@@ -102,7 +107,7 @@ void ConfigManager::print_usage(const char* prog_name) {
     std::cout << "Usage: " << prog_name << " [OPTIONS]" << std::endl;
     std::cout << std::endl;
     std::cout << "Required Options:" << std::endl;
-    std::cout << "  --traddr ADDR         Target IP address (required)" << std::endl;
+    std::cout << "  --traddr ADDR         Target IP address (can specify multiple for multi-path)" << std::endl;
     std::cout << "  --trsvcid PORT        Service ID/port (default: 4420)" << std::endl;
     std::cout << "  --hostnqn NQN         Host NQN (required)" << std::endl;
     std::cout << std::endl;
@@ -126,6 +131,9 @@ void ConfigManager::print_usage(const char* prog_name) {
     std::cout << std::endl;
     std::cout << "Examples:" << std::endl;
     std::cout << "  " << prog_name << " --traddr 192.168.1.100 --hostnqn nqn.2014-08.org.nvmexpress:uuid:1234 --runtime 60 --iodepth 256 --num-cores 4" << std::endl;
+    std::cout << std::endl;
+    std::cout << "Multi-path example (connect via multiple IPs for more QPairs):" << std::endl;
+    std::cout << "  " << prog_name << " --traddr 192.168.1.100 --traddr 192.168.1.101 --traddr 192.168.1.102 --hostnqn nqn... --num-cores 6" << std::endl;
 }
 
 int ConfigManager::parse_args(int argc, char** argv, Config& config) {
@@ -157,7 +165,7 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
     while ((opt = getopt_long(argc, argv, "a:s:n:r:d:c:jvh", long_options, &option_index)) != -1) {
         switch (opt) {
             case 'a':
-                config.traddr = optarg;
+                config.traddrs.push_back(optarg);  // Accumulate multiple IPs
                 break;
             case 's':
                 config.trsvcid = optarg;

@@ -10,10 +10,10 @@ namespace xload {
 
 struct Config {
     // Transport configuration
-    std::string traddr;          // Target IP address
-    std::string trsvcid;         // Service ID (port)
-    std::string hostnqn;         // Host NQN
-    std::string subnqn;          // Subsystem NQN (optional, for discovery)
+    std::vector<std::string> traddrs;  // Target IP addresses (multiple for multi-path)
+    std::string trsvcid;               // Service ID (port)
+    std::string hostnqn;               // Host NQN
+    std::string subnqn;                // Subsystem NQN (optional, for discovery)
     
     // Runtime configuration
     uint64_t runtime_sec;        // Runtime duration in seconds (0 = infinite)

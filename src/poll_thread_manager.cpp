@@ -530,45 +530,42 @@ int PollThreadManager::start() {
     struct spdk_thread* current_thread = spdk_get_thread();
     (void)current_thread; // Unused for now
     
-    // WORKAROUND: Create QPairs serially and poll for connection
-    // Without SPDK threads, we need to manually poll the QPair connection
-    // For simplicity in workaround mode, use a single shared QPair for all threads
-    // This avoids connection polling issues
-    
-    struct spdk_nvme_ctrlr* ctrlr = spdk_ctx_->get_ctrlr();
-    if (!ctrlr) {
-        std::cerr << "Error: No controller available" << std::endl;
+    // Multi-path support: Distribute threads across all available controllers
+    size_t num_controllers = spdk_ctx_->get_ctrlr_count();
+    if (num_controllers == 0) {
+        std::cerr << "Error: No controllers available" << std::endl;
         return -1;
     }
     
-    // Get controller's maximum queue depth capability
+    // Get controller's maximum queue depth capability (from first controller)
+    struct spdk_nvme_ctrlr* ctrlr = spdk_ctx_->get_ctrlr(0);
     const struct spdk_nvme_ctrlr_data* cdata = spdk_nvme_ctrlr_get_data(ctrlr);
-    uint32_t max_queue_depth = cdata->maxcmd; // Maximum number of commands per queue
+    uint32_t max_queue_depth = cdata->maxcmd;
     
     // Calculate per-thread queue depth
-    // Each thread gets its own QPair with a portion of the total requested depth
     uint32_t per_thread_depth = iodepth_ / effective_cores;
-    if (per_thread_depth < 4) per_thread_depth = 4; // Minimum depth per thread
+    if (per_thread_depth < 4) per_thread_depth = 4;
     
     if (per_thread_depth > max_queue_depth) {
         std::cout << "Note: Per-thread queue depth (" << per_thread_depth 
                   << ") exceeds controller maximum (" << max_queue_depth << ")" << std::endl;
-        std::cout << "      Using maximum supported depth: " << max_queue_depth << std::endl;
         per_thread_depth = max_queue_depth;
     }
     
-    // Cap at 1024 as a practical limit
     if (per_thread_depth > 1024) {
         per_thread_depth = 1024;
     }
     
     actual_qpair_depth_ = per_thread_depth;
     
-    std::cout << "Creating " << effective_cores << " QPairs (depth " 
-              << per_thread_depth << " each, total depth " 
-              << (per_thread_depth * effective_cores) << ")" << std::endl;
+    std::cout << "Creating QPairs across " << num_controllers << " controller(s), "
+              << effective_cores << " thread(s) requested (depth " 
+              << per_thread_depth << " each)" << std::endl;
     
-    // Create threads - each with its own dedicated QPair
+    // Track how many QPairs we've created on each controller
+    std::vector<uint32_t> qpairs_per_ctrlr(num_controllers, 0);
+    
+    // Create threads - distribute across controllers round-robin
     for (uint32_t i = 0; i < effective_cores; i++) {
         auto ctx = std::make_unique<PollThreadContext>();
         ctx->thread_id = i;
@@ -581,28 +578,41 @@ int PollThreadManager::start() {
         ctx->should_stop = false;
         ctx->spdk_thread = nullptr;
         
-        // Create dedicated QPair for this thread
-        spdk_nvme_io_qpair_opts opts;
-        spdk_nvme_ctrlr_get_default_io_qpair_opts(ctrlr, &opts, sizeof(opts));
-        opts.qprio = SPDK_NVME_QPRIO_URGENT;
-        opts.io_queue_size = per_thread_depth;
+        // Try to create QPair on each controller (round-robin with fallback)
+        bool qpair_created = false;
+        size_t attempts = 0;
+        size_t ctrlr_idx = i % num_controllers;  // Start with round-robin
         
-        ctx->qpair = spdk_ctx_->create_qpair(per_thread_depth, &opts);
-        if (!ctx->qpair) {
-            // Server may limit number of I/O queues - use what we have
-            if (i > 0) {
-                std::cout << "  Thread " << i << ": No more queue IDs available (server limit)" << std::endl;
-                std::cout << "  Note: Server limits I/O queues - using " << i << " thread(s)" << std::endl;
-                effective_cores = i; // Use only the threads we could create
-                break; // Exit the loop, use what we have
+        while (!qpair_created && attempts < num_controllers) {
+            struct spdk_nvme_ctrlr* target_ctrlr = spdk_ctx_->get_ctrlr(ctrlr_idx);
+            spdk_nvme_io_qpair_opts opts;
+            spdk_nvme_ctrlr_get_default_io_qpair_opts(target_ctrlr, &opts, sizeof(opts));
+            opts.qprio = SPDK_NVME_QPRIO_URGENT;
+            opts.io_queue_size = per_thread_depth;
+            
+            ctx->qpair = spdk_ctx_->create_qpair(per_thread_depth, &opts, ctrlr_idx);
+            if (ctx->qpair) {
+                qpairs_per_ctrlr[ctrlr_idx]++;
+                qpair_created = true;
             } else {
-                std::cerr << "Error: Failed to create any QPairs" << std::endl;
-                return -1;
+                // This controller is full, try next one
+                ctrlr_idx = (ctrlr_idx + 1) % num_controllers;
+                attempts++;
             }
         }
         
+        if (!qpair_created) {
+            // All controllers are full
+            if (threads_.empty()) {
+                std::cerr << "Error: Failed to create any QPairs" << std::endl;
+                return -1;
+            }
+            std::cout << "  All controllers at queue limit - using " << threads_.size() << " thread(s)" << std::endl;
+            break;
+        }
+        
         // Poll QPair to establish connection
-        std::cout << "  Thread " << i << ": Connecting QPair..." << std::flush;
+        std::cout << "  Thread " << i << " [ctrlr " << ctrlr_idx << "]: Connecting..." << std::flush;
         int poll_count = 0;
         const int max_polls = 5000; // 5 seconds max per QPair
         bool connected = false;
@@ -655,7 +665,17 @@ int PollThreadManager::start() {
         return -1;
     }
     
-    std::cout << "All " << threads_.size() << " threads started with dedicated QPairs" << std::endl;
+    // Show distribution across controllers
+    std::cout << "Started " << threads_.size() << " thread(s) across " << num_controllers << " controller(s)";
+    if (num_controllers > 1) {
+        std::cout << " [";
+        for (size_t c = 0; c < num_controllers; c++) {
+            if (c > 0) std::cout << ", ";
+            std::cout << "c" << c << ":" << qpairs_per_ctrlr[c];
+        }
+        std::cout << "]";
+    }
+    std::cout << std::endl;
     
     running_ = true;
     return 0;

@@ -41,16 +41,16 @@ int main(int argc, char** argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    // Initialize SPDK context
+    // Initialize SPDK context (multi-path: connect to all provided addresses)
     SpdkContext spdk_ctx;
-    if (spdk_ctx.init(config.traddr, config.trsvcid, 
+    if (spdk_ctx.init(config.traddrs, config.trsvcid, 
                       config.hostnqn, config.subnqn) != 0) {
         std::cerr << "Failed to initialize SPDK context" << std::endl;
         return 1;
     }
     
     if (config.verbose) {
-        std::cout << "Connected to NVMe controller" << std::endl;
+        std::cout << "Connected to " << spdk_ctx.get_ctrlr_count() << " NVMe controller(s)" << std::endl;
         std::cout << "Namespaces:" << std::endl;
         for (const auto& ns : spdk_ctx.get_namespaces()) {
             std::cout << "  NSID " << ns.nsid << ": " 

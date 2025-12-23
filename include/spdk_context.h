@@ -25,17 +25,22 @@ public:
     SpdkContext();
     ~SpdkContext();
     
-    // Initialize SPDK environment
-    int init(const std::string& traddr, const std::string& trsvcid,
+    // Initialize SPDK environment with multiple target addresses (multi-path)
+    int init(const std::vector<std::string>& traddrs, const std::string& trsvcid,
              const std::string& hostnqn, const std::string& subnqn);
     
     // Cleanup
     void cleanup();
     
-    // Get controller
-    struct spdk_nvme_ctrlr* get_ctrlr() const { return ctrlr_; }
+    // Get controller count (multi-path)
+    size_t get_ctrlr_count() const { return ctrlrs_.size(); }
     
-    // Get namespace by ID
+    // Get controller by index
+    struct spdk_nvme_ctrlr* get_ctrlr(size_t index = 0) const { 
+        return index < ctrlrs_.size() ? ctrlrs_[index] : nullptr; 
+    }
+    
+    // Get namespace by ID (uses first controller - all controllers have same namespaces)
     struct spdk_nvme_ns* get_ns(uint32_t nsid) const;
     
     // Get namespace info
@@ -47,9 +52,10 @@ public:
     // Check if TP4130 (cross-namespace copy) is supported
     bool supports_cross_namespace_copy() const;
     
-    // Create a QPair for a specific thread
+    // Create a QPair for a specific controller (for multi-path load balancing)
     struct spdk_nvme_qpair* create_qpair(uint32_t queue_depth, 
-                                         spdk_nvme_io_qpair_opts* opts = nullptr);
+                                         spdk_nvme_io_qpair_opts* opts = nullptr,
+                                         size_t ctrlr_index = 0);
     
     // Delete a QPair
     void delete_qpair(struct spdk_nvme_qpair* qpair);
@@ -67,12 +73,15 @@ public:
     static void set_spdk_threads_enabled(bool enabled);
     
 private:
-    struct spdk_nvme_ctrlr* ctrlr_;
-    struct spdk_nvme_transport_id trid_;
+    std::vector<struct spdk_nvme_ctrlr*> ctrlrs_;  // Multiple controllers for multi-path
+    std::vector<struct spdk_nvme_transport_id> trids_;
     std::vector<NamespaceInfo> namespaces_;
     bool initialized_;
     std::string hostnqn_;  // Store hostnqn for use in probe callback
     struct spdk_thread* main_thread_;  // Main SPDK thread (workaround)
+    
+    // Current controller being attached (for callback)
+    struct spdk_nvme_ctrlr* current_ctrlr_;
     
     // Probe callback
     static bool probe_cb(void* cb_ctx, const struct spdk_nvme_transport_id* trid,
