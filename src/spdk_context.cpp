@@ -170,23 +170,27 @@ int SpdkContext::init(const std::string& traddr, const std::string& trsvcid,
     spdk_env_opts_init(&opts);
     opts.name = "x-load";
     
-    // Use fixed shared memory ID for predictable DPDK runtime directory
-    opts.shm_id = 0;
-    
     // Request sufficient memory for DPDK heap allocation
     opts.mem_size = 512;
     
     // Container-friendly options:
     // - no_pci: We don't need local PCI devices for NVMe-oF/TCP
-    // - hugepage_single_segments: Use single file segments (more compatible in containers)
-    // Note: hugepage_single_segments is NOT compatible with unlink_hugepage
     opts.no_pci = true;
-    opts.hugepage_single_segments = true;
     
-    // Ensure DPDK runtime directories exist (silently ignore if they already exist)
+    // Use --in-memory mode: DPDK will not create any shared memory files
+    // This is the most container-friendly mode and avoids ENOENT issues
+    // Also disable telemetry which can cause additional file access issues
+    // Use core mask 0xFFFF to allow up to 16 cores (uses available cores)
+    opts.env_context = const_cast<char*>("--in-memory --no-telemetry");
+    
+    // Use -1 for shm_id with --in-memory (private memory, no shared files)
+    opts.shm_id = -1;
+    
+    // Set core mask to allow multiple cores (0xFF = up to 8 cores)
+    opts.core_mask = "0xFF";
+    
+    // Ensure DPDK runtime directories exist just in case
     mkdir("/var/run/dpdk", 0777);
-    mkdir("/var/run/dpdk/spdk0", 0777);
-    mkdir("/tmp/dpdk", 0777);
     
     // Initialize environment
     if (spdk_env_init(&opts) < 0) {
