@@ -14,7 +14,12 @@ void JsonReporter::generate_report(const Statistics& stats,
     
     out << "{\n";
     out << "  \"configuration\": {\n";
-    out << "    \"traddr\": \"" << config.traddr << "\",\n";
+    out << "    \"traddrs\": [";
+    for (size_t i = 0; i < config.traddrs.size(); ++i) {
+        out << "\"" << config.traddrs[i] << "\"";
+        if (i < config.traddrs.size() - 1) out << ", ";
+    }
+    out << "],\n";
     out << "    \"trsvcid\": \"" << config.trsvcid << "\",\n";
     out << "    \"hostnqn\": \"" << config.hostnqn << "\",\n";
     out << "    \"runtime_sec\": " << config.runtime_sec << ",\n";
