@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <errno.h> // For ENXIO, ENODEV
 #include <chrono>  // For keep-alive timing
+#include <algorithm>  // For std::min
 
 // SPDK thread functions are already declared in spdk/thread.h (included via spdk_context.h)
 
@@ -271,11 +272,14 @@ int PollThreadManager::poller_func(void* arg) {
         spdk_nvme_qpair_process_completions(ctx->qpair, 0);
     }
     
-    // Submit new I/O to maintain depth (limit submissions per poll to avoid starvation)
+    // Submit new I/O to maintain depth
     // Only try to submit if qpair is valid
+    // Removed fixed limit - allow up to target_iodepth submissions per poll for faster queue filling
     if (ctx->qpair) {
         int submitted = 0;
-        const int max_submissions_per_poll = 32;
+        // Make limit proportional to iodepth to avoid starvation with high iodepth
+        // Cap at reasonable maximum to prevent excessive CPU usage in error cases
+        const int max_submissions_per_poll = std::min(static_cast<int>(ctx->target_iodepth), 256);
         while (ctx->outstanding_io.load() < ctx->target_iodepth && 
                !ctx->should_stop.load() && submitted < max_submissions_per_poll) {
             if (submit_next_io(ctx) == 0) {
@@ -359,11 +363,9 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         }
         // Submit I/O if we have capacity and QPair is still valid
         if (ctx->qpair) {
-            // Limit initial submissions to 1 to debug the disconnect issue
-            // Once we confirm it works, we can remove this limit
-            int max_initial_submissions = (submission_count == 0) ? 1 : ctx->target_iodepth;
-            
-            while (ctx->outstanding_io.load() < max_initial_submissions) {
+            // Submit I/O up to target depth to maintain steady-state performance
+            // Removed artificial initial limit to allow faster ramp-up
+            while (ctx->outstanding_io.load() < ctx->target_iodepth) {
                 if (submit_next_io(ctx) == 0) {
                     break;  // No more I/O to submit
                 }
@@ -401,8 +403,17 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
             }
         }
         
-        // Small sleep to avoid 100% CPU (not ideal but works for sanity test)
-        usleep(100);
+        // Adaptive sleep: only sleep if no completions were processed
+        // This reduces latency when I/O is active while preventing CPU spinning when idle
+        if (ctx->qpair) {
+            // Check if we're at target depth - if so, we can sleep briefly
+            // Otherwise, continue polling aggressively to maintain depth
+            if (ctx->outstanding_io.load() >= ctx->target_iodepth) {
+                // At target depth, brief sleep to avoid 100% CPU
+                usleep(10); // Reduced from 100us to 10us for lower latency
+            }
+            // If below target depth, no sleep - continue polling to fill queue
+        }
     }
     
     // Wait for outstanding I/O to complete (if QPair is still valid)

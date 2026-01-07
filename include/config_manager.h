@@ -20,6 +20,7 @@ struct Config {
     uint32_t iodepth;            // Maximum global I/O depth
     uint32_t num_cores;          // Number of dedicated CPU cores
     uint32_t max_ranges;         // Maximum source ranges per command (1-16)
+    uint32_t fixed_ranges;       // Fixed number of ranges per command (0 = random, 1-16 = fixed)
     
     // Workload configuration
     uint32_t dst_nsid;           // Destination namespace ID

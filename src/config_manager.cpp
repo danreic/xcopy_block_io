@@ -16,6 +16,7 @@ Config::Config()
     , iodepth(64)
     , num_cores(1)
     , max_ranges(1)
+    , fixed_ranges(0)  // Default: 0 = use random number of ranges (1 to max_ranges)
     , dst_nsid(1)
     , dst_lba_start(0)
     , dst_lba_end(0)
@@ -45,6 +46,17 @@ bool Config::validate() const {
     
     if (max_ranges == 0 || max_ranges > 16) {
         std::cerr << "Error: --max-ranges must be between 1 and 16" << std::endl;
+        return false;
+    }
+    
+    if (fixed_ranges > 16) {
+        std::cerr << "Error: --fixed-ranges must be between 0 and 16 (0 = random)" << std::endl;
+        return false;
+    }
+    
+    if (fixed_ranges > 0 && fixed_ranges > max_ranges) {
+        std::cerr << "Error: --fixed-ranges (" << fixed_ranges 
+                  << ") cannot exceed --max-ranges (" << max_ranges << ")" << std::endl;
         return false;
     }
     
@@ -80,6 +92,11 @@ void Config::print() const {
     std::cout << "  I/O Depth: " << iodepth << std::endl;
     std::cout << "  CPU Cores: " << num_cores << std::endl;
     std::cout << "  Max Ranges: " << max_ranges << std::endl;
+    if (fixed_ranges > 0) {
+        std::cout << "  Fixed Ranges: " << fixed_ranges << " (operations use fixed size)" << std::endl;
+    } else {
+        std::cout << "  Fixed Ranges: random (1 to " << max_ranges << ")" << std::endl;
+    }
     std::cout << "  Range Size: " << range_size << " blocks" << std::endl;
     std::cout << "  Destination NSID: " << dst_nsid << std::endl;
     if (!src_nsids.empty()) {
@@ -116,6 +133,7 @@ void ConfigManager::print_usage(const char* prog_name) {
     std::cout << "  --iodepth DEPTH       Maximum global I/O depth (default: 64)" << std::endl;
     std::cout << "  --num-cores CORES     Number of dedicated CPU cores (default: 1)" << std::endl;
     std::cout << "  --max-ranges NUM      Maximum source ranges per command (1-16, default: 1)" << std::endl;
+    std::cout << "  --fixed-ranges NUM    Fixed number of ranges per command (0=random, 1-16=fixed, default: 0)" << std::endl;
     std::cout << "  --dst-nsid NSID       Destination namespace ID (default: 1)" << std::endl;
     std::cout << "  --src-nsid NSID       Source namespace ID (can be specified multiple times)" << std::endl;
     std::cout << "  --dst-lba-start LBA   Starting LBA for destination (default: 0)" << std::endl;
@@ -146,6 +164,7 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
         {"iodepth", required_argument, 0, 'd'},
         {"num-cores", required_argument, 0, 'c'},
         {"max-ranges", required_argument, 0, 1001},
+        {"fixed-ranges", required_argument, 0, 1009},
         {"dst-nsid", required_argument, 0, 1002},
         {"src-nsid", required_argument, 0, 1003},
         {"dst-lba-start", required_argument, 0, 1004},
@@ -187,6 +206,9 @@ int ConfigManager::parse_args(int argc, char** argv, Config& config) {
                 break;
             case 1001:
                 config.max_ranges = strtoul(optarg, nullptr, 0);
+                break;
+            case 1009:
+                config.fixed_ranges = strtoul(optarg, nullptr, 0);
                 break;
             case 1002:
                 config.dst_nsid = strtoul(optarg, nullptr, 0);
