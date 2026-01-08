@@ -121,7 +121,11 @@ int SpdkContext::init(const std::vector<std::string>& traddrs, const std::string
     opts.no_pci = true;
     opts.env_context = const_cast<char*>("--no-telemetry");
     opts.shm_id = -1;
-    opts.core_mask = "0xFF";
+    
+    // Auto-detect available cores: use only core 0 by default for container compatibility
+    // DPDK will fail if we request cores that aren't available in the container/VM
+    // The application handles multi-threading via pthread, so we only need 1 DPDK core
+    opts.core_mask = "0x1";
     
     mkdir("/var/run/dpdk", 0777);
     
