@@ -166,6 +166,9 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         return -1; // Invalid range size
     }
     
+    // Track source NSIDs per range for overlap checking
+    std::vector<uint32_t> range_src_nsids(op.num_ranges);
+    
     // Generate source ranges
     for (uint32_t i = 0; i < op.num_ranges; i++) {
         // For format 2, each range can have a different source NSID
@@ -177,6 +180,7 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
                 return -1; // Invalid namespace or range too large
             }
         }
+        range_src_nsids[i] = src_nsid;
         
         // Get random source LBA within namespace bounds
         uint64_t src_lba = lba_mgr.get_random_src_lba(range_size);
@@ -249,9 +253,14 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
     // CRITICAL: Check for source/destination overlap in same-namespace copy
     // Many NVMe implementations reject XCOPY when source and destination ranges overlap
     // in the same namespace (this can cause data corruption)
-    // Optimized: Removed expensive logging from hot path - overlap detection is fast enough
+    // NOTE: Skip overlap check for cross-namespace copies (different volumes)
     uint64_t dst_end = op.dst_lba + op.total_blocks;
     for (uint32_t i = 0; i < op.num_ranges; i++) {
+        // Only check overlap if source and destination are in the same namespace
+        if (range_src_nsids[i] != op.dst_nsid) {
+            continue; // Different namespaces - overlap is not an issue
+        }
+        
         uint64_t src_lba = op.ranges[i].slba;
         uint64_t src_blocks = op.ranges[i].nlb + 1;
         uint64_t src_end = src_lba + src_blocks;
@@ -260,8 +269,7 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
         // Overlap occurs if: src_lba < dst_end && src_end > op.dst_lba
         if (src_lba < dst_end && src_end > op.dst_lba) {
             // Overlap detected - regenerate this operation
-            // Removed std::cerr logging from hot path to reduce overhead
-            // This is a common issue in same-namespace copy workloads
+            // This can cause data corruption in same-namespace copy workloads
             return -1; // Signal to caller to regenerate
         }
     }
