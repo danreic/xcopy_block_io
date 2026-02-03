@@ -10,6 +10,57 @@
 
 namespace xload {
 
+// Lock-free ring buffer for latency samples
+class LockFreeLatencyBuffer {
+public:
+    static constexpr size_t BUFFER_SIZE = 65536; // Power of 2 for fast modulo
+    
+    LockFreeLatencyBuffer() : write_index_(0), sample_count_(0) {
+        samples_ = new std::atomic<uint64_t>[BUFFER_SIZE];
+        for (size_t i = 0; i < BUFFER_SIZE; i++) {
+            samples_[i].store(0, std::memory_order_relaxed);
+        }
+    }
+    
+    ~LockFreeLatencyBuffer() {
+        delete[] samples_;
+    }
+    
+    // Lock-free sample recording
+    void record(uint64_t latency_ns) {
+        size_t idx = write_index_.fetch_add(1, std::memory_order_relaxed) & (BUFFER_SIZE - 1);
+        samples_[idx].store(latency_ns, std::memory_order_relaxed);
+        sample_count_.fetch_add(1, std::memory_order_relaxed);
+    }
+    
+    // Get samples for percentile calculation (called from single thread during reporting)
+    std::vector<uint64_t> get_samples() const {
+        size_t count = std::min(sample_count_.load(std::memory_order_relaxed), BUFFER_SIZE);
+        std::vector<uint64_t> result;
+        result.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            uint64_t val = samples_[i].load(std::memory_order_relaxed);
+            if (val > 0) {
+                result.push_back(val);
+            }
+        }
+        return result;
+    }
+    
+    void reset() {
+        write_index_.store(0, std::memory_order_relaxed);
+        sample_count_.store(0, std::memory_order_relaxed);
+        for (size_t i = 0; i < BUFFER_SIZE; i++) {
+            samples_[i].store(0, std::memory_order_relaxed);
+        }
+    }
+    
+private:
+    std::atomic<uint64_t>* samples_;
+    std::atomic<size_t> write_index_;
+    std::atomic<size_t> sample_count_;
+};
+
 struct Statistics {
     std::atomic<uint64_t> operations_completed;
     std::atomic<uint64_t> operations_failed;
@@ -18,9 +69,12 @@ struct Statistics {
     std::atomic<uint64_t> min_latency_ns;
     std::atomic<uint64_t> max_latency_ns;
     
-    // Latency samples for percentile calculation
-    std::vector<uint64_t> latency_samples;
-    mutable std::mutex samples_mutex;
+    // Lock-free latency buffer for percentile calculation
+    LockFreeLatencyBuffer latency_buffer;
+    
+    // Legacy fields for compatibility
+    std::vector<uint64_t> latency_samples;  // Used only during get_snapshot
+    mutable std::mutex samples_mutex;       // Only used during snapshot/percentile calc
     size_t max_samples;
     
     // Error tracking
@@ -28,7 +82,7 @@ struct Statistics {
     
     Statistics();
     
-    // Record completion
+    // Record completion (LOCK-FREE hot path)
     void record_completion(uint64_t bytes, uint64_t latency_ns);
     
     // Record failure
