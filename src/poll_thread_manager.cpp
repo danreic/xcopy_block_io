@@ -233,7 +233,7 @@ int PollThreadManager::poller_func(void* arg) {
         const int max_submissions_per_poll = std::min(static_cast<int>(ctx->target_iodepth), 256);
         while (ctx->outstanding_io.load() < ctx->target_iodepth && 
                !ctx->should_stop.load() && submitted < max_submissions_per_poll) {
-            if (submit_next_io(ctx) == 0) {
+            if (submit_next_io_pooled(ctx) == 0) {
                 break; // No more I/O to submit (could be qpair disconnected, depth reached, or generation failed)
             }
             submitted++;
