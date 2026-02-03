@@ -11,39 +11,36 @@ Statistics::Statistics()
     , total_latency_ns(0)
     , min_latency_ns(UINT64_MAX)
     , max_latency_ns(0)
-    , max_samples(100000) // Keep up to 100k samples for percentile calculation
+    , max_samples(100000)
 {
     latency_samples.reserve(max_samples);
 }
 
+// LOCK-FREE hot path - no mutex on the critical path
 void Statistics::record_completion(uint64_t bytes, uint64_t latency_ns) {
-    operations_completed++;
-    bytes_copied += bytes;
-    total_latency_ns += latency_ns;
+    // All atomic operations - no locks
+    operations_completed.fetch_add(1, std::memory_order_relaxed);
+    bytes_copied.fetch_add(bytes, std::memory_order_relaxed);
+    total_latency_ns.fetch_add(latency_ns, std::memory_order_relaxed);
     
-    uint64_t current_min = min_latency_ns.load();
+    // Lock-free min update
+    uint64_t current_min = min_latency_ns.load(std::memory_order_relaxed);
     while (latency_ns < current_min && 
-           !min_latency_ns.compare_exchange_weak(current_min, latency_ns)) {
-        current_min = min_latency_ns.load();
+           !min_latency_ns.compare_exchange_weak(current_min, latency_ns,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+        // current_min is updated by compare_exchange_weak
     }
     
-    uint64_t current_max = max_latency_ns.load();
+    // Lock-free max update
+    uint64_t current_max = max_latency_ns.load(std::memory_order_relaxed);
     while (latency_ns > current_max && 
-           !max_latency_ns.compare_exchange_weak(current_max, latency_ns)) {
-        current_max = max_latency_ns.load();
+           !max_latency_ns.compare_exchange_weak(current_max, latency_ns,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+        // current_max is updated by compare_exchange_weak
     }
     
-    // Store sample for percentile calculation
-    {
-        std::lock_guard<std::mutex> lock(samples_mutex);
-        if (latency_samples.size() < max_samples) {
-            latency_samples.push_back(latency_ns);
-        } else {
-            // Replace random sample to maintain distribution
-            size_t idx = operations_completed.load() % max_samples;
-            latency_samples[idx] = latency_ns;
-        }
-    }
+    // Lock-free sample recording
+    latency_buffer.record(latency_ns);
 }
 
 void Statistics::record_failure(uint16_t status_code) {
@@ -52,13 +49,13 @@ void Statistics::record_failure(uint16_t status_code) {
 }
 
 double Statistics::get_percentile(double p) const {
-    std::lock_guard<std::mutex> lock(samples_mutex);
+    // Get samples from lock-free buffer
+    std::vector<uint64_t> sorted = latency_buffer.get_samples();
     
-    if (latency_samples.empty()) {
+    if (sorted.empty()) {
         return 0.0;
     }
     
-    std::vector<uint64_t> sorted = latency_samples;
     std::sort(sorted.begin(), sorted.end());
     
     if (p <= 0.0) {
@@ -81,7 +78,7 @@ double Statistics::get_percentile(double p) const {
 }
 
 double Statistics::get_std_dev() const {
-    uint64_t completed = operations_completed.load();
+    uint64_t completed = operations_completed.load(std::memory_order_relaxed);
     if (completed == 0) {
         return 0.0;
     }
@@ -89,15 +86,19 @@ double Statistics::get_std_dev() const {
     double avg = get_avg_latency_ns();
     double sum_sq_diff = 0.0;
     
-    {
-        std::lock_guard<std::mutex> lock(samples_mutex);
-        for (uint64_t sample : latency_samples) {
-            double diff = static_cast<double>(sample) - avg;
-            sum_sq_diff += diff * diff;
-        }
+    // Get samples from lock-free buffer
+    std::vector<uint64_t> samples = latency_buffer.get_samples();
+    for (uint64_t sample : samples) {
+        double diff = static_cast<double>(sample) - avg;
+        sum_sq_diff += diff * diff;
     }
     
-    return std::sqrt(sum_sq_diff / completed);
+    size_t sample_count = samples.size();
+    if (sample_count == 0) {
+        return 0.0;
+    }
+    
+    return std::sqrt(sum_sq_diff / sample_count);
 }
 
 double Statistics::get_avg_latency_ns() const {
@@ -129,33 +130,29 @@ double Statistics::get_throughput_mbps(double elapsed_sec) const {
 }
 
 void Statistics::reset() {
-    operations_completed = 0;
-    operations_failed = 0;
-    bytes_copied = 0;
-    total_latency_ns = 0;
-    min_latency_ns = UINT64_MAX;
-    max_latency_ns = 0;
+    operations_completed.store(0, std::memory_order_relaxed);
+    operations_failed.store(0, std::memory_order_relaxed);
+    bytes_copied.store(0, std::memory_order_relaxed);
+    total_latency_ns.store(0, std::memory_order_relaxed);
+    min_latency_ns.store(UINT64_MAX, std::memory_order_relaxed);
+    max_latency_ns.store(0, std::memory_order_relaxed);
     
-    {
-        std::lock_guard<std::mutex> lock(samples_mutex);
-        latency_samples.clear();
-    }
+    latency_buffer.reset();
+    latency_samples.clear();
     
     error_counter.reset();
 }
 
 void Statistics::get_snapshot(Statistics& snapshot) const {
-    snapshot.operations_completed = operations_completed.load();
-    snapshot.operations_failed = operations_failed.load();
-    snapshot.bytes_copied = bytes_copied.load();
-    snapshot.total_latency_ns = total_latency_ns.load();
-    snapshot.min_latency_ns = min_latency_ns.load();
-    snapshot.max_latency_ns = max_latency_ns.load();
+    snapshot.operations_completed.store(operations_completed.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    snapshot.operations_failed.store(operations_failed.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    snapshot.bytes_copied.store(bytes_copied.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    snapshot.total_latency_ns.store(total_latency_ns.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    snapshot.min_latency_ns.store(min_latency_ns.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    snapshot.max_latency_ns.store(max_latency_ns.load(std::memory_order_relaxed), std::memory_order_relaxed);
     
-    {
-        std::lock_guard<std::mutex> lock(samples_mutex);
-        snapshot.latency_samples = latency_samples;
-    }
+    // Copy samples from lock-free buffer
+    snapshot.latency_samples = latency_buffer.get_samples();
 }
 
 } // namespace xload

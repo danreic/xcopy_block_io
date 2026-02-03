@@ -3,8 +3,10 @@
 #include <cstring>
 #include <unistd.h>
 #include <pthread.h>
-#include <errno.h> // For ENXIO, ENODEV
-#include <chrono>  // For keep-alive timing
+#include <errno.h>
+#include <chrono>
+#include <algorithm>
+#include <sched.h>
 
 // SPDK thread functions are already declared in spdk/thread.h (included via spdk_context.h)
 
@@ -33,6 +35,8 @@ PollThreadContext::PollThreadContext()
     , stats(nullptr)
     , running(false)
     , should_stop(false)
+    , op_pool(nullptr)
+    , deferred_count(0)
 {
 }
 
@@ -59,14 +63,15 @@ PollThreadManager::~PollThreadManager() {
     wait();
 }
 
-void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl* cpl) {
-    XcopyOperation* op = static_cast<XcopyOperation*>(arg);
+// Optimized completion callback using pooled operations
+void PollThreadManager::xcopy_complete_cb_pooled(void* arg, const struct spdk_nvme_cpl* cpl) {
+    PooledOperation* op = static_cast<PooledOperation*>(arg);
     if (!op) {
         return;
     }
     PollThreadContext* ctx = static_cast<PollThreadContext*>(op->user_data);
     
-    if (!ctx || !op) {
+    if (!ctx) {
         return;
     }
     
@@ -78,173 +83,120 @@ void PollThreadManager::xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl*
     uint16_t status_code = cpl->status.sc;
     
     if (spdk_nvme_cpl_is_error(cpl) || status_code != 0) {
-        // Log errors only in verbose mode (limit logging)
-        static std::atomic<uint64_t> error_count(0);
-        uint64_t count = error_count.fetch_add(1);
-        
-        if (SpdkContext::is_verbose()) {
-            bool should_log = (count < 5) || (count % 1000 == 0);
-            
-            if (should_log) {
-                std::cerr << "XCOPY error #" << count << ": SC=" << (int)cpl->status.sc 
-                          << " dst_lba=" << op->dst_lba << std::endl;
-            }
-        }
-        
-        // Record failure
+        // Record failure (lock-free)
         ctx->stats->record_failure(status_code);
         
-        // Handle SC=8 (LBA Out of Range) - skip this LBA range
-        // Some targets have restrictions on which LBAs can be used for XCOPY
-        if (status_code == 0x8) {
-            // Reset destination LBA to start to avoid hitting more invalid ranges
-            // This is a workaround for targets with LBA restrictions
-            if (ctx->lba_mgr) {
-                ctx->lba_mgr->reset_dst_lba();
-            }
+        // Handle specific errors
+        if (status_code == 0x8 && ctx->lba_mgr) {
+            ctx->lba_mgr->reset_dst_lba();
         }
         
-        // Check if it's a saturation error (backpressure)
         if (ErrorHandler::is_saturation_error(status_code)) {
-            // Defer retry - don't block
-            handle_backpressure(ctx, *op);
+            ctx->deferred_count.fetch_add(1, std::memory_order_relaxed);
         }
     } else {
-        // Calculate bytes copied
-        uint64_t bytes = op->total_blocks * 512; // Assume 512-byte blocks for now
-        // TODO: Get actual block size from namespace
-        
+        // Record completion (lock-free)
+        uint64_t bytes = op->total_blocks * 512;
         ctx->stats->record_completion(bytes, latency_ns);
     }
     
     // Decrement outstanding I/O
-    ctx->outstanding_io--;
+    ctx->outstanding_io.fetch_sub(1, std::memory_order_release);
     
-    // Free operation
-    op->free_ranges();
-    delete op;
+    // Release operation back to pool (lock-free)
+    if (ctx->op_pool) {
+        ctx->op_pool->release(op);
+    }
     
-    // Immediately submit next I/O to maintain depth (CSP pattern)
-    // This happens in the polling thread context
-    submit_next_io(ctx);
+    // Submit next I/O immediately (CSP pattern)
+    submit_next_io_pooled(ctx);
 }
 
-int PollThreadManager::submit_next_io(PollThreadContext* ctx) {
-    // Check if we should stop
-    if (ctx->should_stop.load()) {
+// Optimized submit using pooled operations - NO MALLOC on hot path
+int PollThreadManager::submit_next_io_pooled(PollThreadContext* ctx) {
+    // Fast path checks
+    if (ctx->should_stop.load(std::memory_order_relaxed)) {
         return 0;
     }
     
-    // Check if qpair is disconnected
     if (!ctx->qpair) {
-        // QPair is disconnected - can't submit new operations
-        // Return 0 to indicate no submission, but don't break the loop
-        // The poller will continue and may recover
         return 0;
     }
     
-    // Check if we've reached target depth
-    if (ctx->outstanding_io.load() >= ctx->target_iodepth) {
+    if (ctx->outstanding_io.load(std::memory_order_relaxed) >= ctx->target_iodepth) {
         return 0;
     }
     
-    // Try deferred operations first (backpressure recovery)
-    // Note: Deferred ops don't have ranges allocated, so we just skip them
-    // and generate new operations. In a production system, you'd store
-    // operation parameters and regenerate ranges.
-    if (!ctx->deferred_ops.empty()) {
-        ctx->deferred_ops.pop_back(); // Remove one deferred op
-        // Fall through to generate new operation
+    // Handle deferred operations
+    uint32_t deferred = ctx->deferred_count.load(std::memory_order_relaxed);
+    if (deferred > 0) {
+        ctx->deferred_count.fetch_sub(1, std::memory_order_relaxed);
     }
     
-    // Generate new operation (retry up to 10 times to avoid overlap)
-    XcopyOperation op;
+    // Acquire operation from pool (lock-free)
+    PooledOperation* op = ctx->op_pool->acquire();
+    if (!op) {
+        return 0; // Pool exhausted
+    }
+    
+    // Create temporary XcopyOperation for generate() compatibility
+    XcopyOperation temp_op;
+    temp_op.ranges = op->ranges;  // Use pooled DMA buffer
+    temp_op.num_ranges = 0;
+    
+    // Generate operation (retry on overlap)
     int retry_count = 0;
-    const int max_retries = 10;
-    while (ctx->generator->generate(op, *ctx->lba_mgr, ctx->range_size) != 0) {
-        retry_count++;
-        if (retry_count >= max_retries) {
-            // Too many retries - likely a persistent issue (e.g., namespace too small)
+    while (ctx->generator->generate(temp_op, *ctx->lba_mgr, ctx->range_size) != 0) {
+        if (++retry_count >= 10) {
+            ctx->op_pool->release(op);
             return 0;
         }
-        // Retry with new random source LBAs
     }
     
-    // Allocate ranges buffer
-    if (op.allocate_ranges(ctx->generator->max_ranges_) != 0) {
-        return 0;
-    }
+    // Copy generated data to pooled operation
+    op->dst_nsid = temp_op.dst_nsid;
+    op->dst_lba = temp_op.dst_lba;
+    op->num_ranges = temp_op.num_ranges;
+    op->total_blocks = temp_op.total_blocks;
+    op->start_time_ns = HighResTimer::now_ns();
+    op->user_data = ctx;
     
-    // Record start time
-    op.start_time_ns = HighResTimer::now_ns();
-    op.user_data = ctx;
+    // Don't free temp_op.ranges - it points to pooled buffer
+    temp_op.ranges = nullptr;
     
-    // Get namespace for the command
-    // For format 0 (same namespace), use destination namespace as source
-    // For format 2 (cross-namespace), source NSIDs are specified in range descriptors
-    struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op.dst_nsid);
-    
+    // Get namespace
+    struct spdk_nvme_ns* ns = ctx->spdk_ctx->get_ns(op->dst_nsid);
     if (!ns) {
-        op.free_ranges();
+        ctx->op_pool->release(op);
         return 0;
     }
     
-    // Create copy for callback (SPDK will call callback with this)
-    // The callback will receive op_copy, so we need to ensure op_copy has valid ranges
-    XcopyOperation* op_copy = new XcopyOperation(op);
-    
-    // Verify op_copy has valid ranges
-    if (!op_copy->ranges || op_copy->num_ranges != op.num_ranges) {
-        delete op_copy;
-        op.free_ranges();
-        return 0;
-    }
-    
-    // Submit XCOPY command using op_copy's ranges (which will be valid in callback)
-    // SPDK will copy the ranges data into the command, so we can use op_copy's ranges
+    // Submit XCOPY command
     int rc = spdk_nvme_ns_cmd_copy(
         ns,
         ctx->qpair,
-        op_copy->ranges,  // Use op_copy's ranges, not op's (callback will receive op_copy)
-        op_copy->num_ranges,
-        op_copy->dst_lba,
-        xcopy_complete_cb,
-        op_copy // Callback will free this
+        op->ranges,
+        op->num_ranges,
+        op->dst_lba,
+        xcopy_complete_cb_pooled,
+        op
     );
     
-    // Free original op's ranges since we're using op_copy's ranges
-    op.free_ranges();
-    
     if (rc == 0) {
-        ctx->outstanding_io++;
+        ctx->outstanding_io.fetch_add(1, std::memory_order_release);
         return 1;
     } else {
-        handle_backpressure(ctx, op);
-        delete op_copy;
+        ctx->op_pool->release(op);
+        handle_backpressure_pooled(ctx);
         return 0;
     }
 }
 
-void PollThreadManager::handle_backpressure(PollThreadContext* ctx, 
-                                            const XcopyOperation& op) {
-    // Defer operation for retry in next polling cycle
-    // Don't block or sleep - just defer
-    // Note: We track deferred count as a simple counter since we can't
-    // easily store the ranges buffer. The next polling cycle will generate
-    // a new operation instead.
-    if (ctx->deferred_ops.size() < 100) { // Limit deferred queue size
-        // Store minimal info - we'll regenerate the operation
-        XcopyOperation deferred_op;
-        deferred_op.dst_nsid = op.dst_nsid;
-        deferred_op.dst_lba = op.dst_lba;
-        deferred_op.num_ranges = op.num_ranges;
-        deferred_op.total_blocks = op.total_blocks;
-        deferred_op.ranges = nullptr; // Will be regenerated
-        deferred_op.start_time_ns = 0;
-        deferred_op.user_data = nullptr;
-        ctx->deferred_ops.push_back(deferred_op);
+void PollThreadManager::handle_backpressure_pooled(PollThreadContext* ctx) {
+    // Just increment deferred counter - no allocation
+    if (ctx->deferred_count.load(std::memory_order_relaxed) < 100) {
+        ctx->deferred_count.fetch_add(1, std::memory_order_relaxed);
     }
-    // If queue is full, drop the operation (backpressure)
 }
 
 int PollThreadManager::poller_func(void* arg) {
@@ -271,14 +223,17 @@ int PollThreadManager::poller_func(void* arg) {
         spdk_nvme_qpair_process_completions(ctx->qpair, 0);
     }
     
-    // Submit new I/O to maintain depth (limit submissions per poll to avoid starvation)
+    // Submit new I/O to maintain depth
     // Only try to submit if qpair is valid
+    // Removed fixed limit - allow up to target_iodepth submissions per poll for faster queue filling
     if (ctx->qpair) {
         int submitted = 0;
-        const int max_submissions_per_poll = 32;
+        // Make limit proportional to iodepth to avoid starvation with high iodepth
+        // Cap at reasonable maximum to prevent excessive CPU usage in error cases
+        const int max_submissions_per_poll = std::min(static_cast<int>(ctx->target_iodepth), 256);
         while (ctx->outstanding_io.load() < ctx->target_iodepth && 
                !ctx->should_stop.load() && submitted < max_submissions_per_poll) {
-            if (submit_next_io(ctx) == 0) {
+            if (submit_next_io_pooled(ctx) == 0) {
                 break; // No more I/O to submit (could be qpair disconnected, depth reached, or generation failed)
             }
             submitted++;
@@ -296,84 +251,78 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     // Set CPU affinity
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
-    CPU_SET(ctx->thread_id, &cpuset);
+    CPU_SET(ctx->thread_id % sysconf(_SC_NPROCESSORS_ONLN), &cpuset);
     pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
     
     // Check if SPDK threads are enabled
     bool use_spdk_threads = SpdkContext::is_spdk_threads_enabled();
     
     if (use_spdk_threads) {
-        // Create SPDK thread for this worker
         char thread_name[32];
         snprintf(thread_name, sizeof(thread_name), "worker_%u", ctx->thread_id);
-        
         ctx->spdk_thread = spdk_thread_create(thread_name, nullptr);
-        if (!ctx->spdk_thread) {
-            use_spdk_threads = false;
-        } else {
-            // Set this thread as the current SPDK thread
+        if (ctx->spdk_thread) {
             spdk_set_thread(ctx->spdk_thread);
+        } else {
+            use_spdk_threads = false;
         }
     }
     
-    if (!use_spdk_threads) {
-        // WORKAROUND: Run without SPDK threads - use direct I/O submission
-        ctx->spdk_thread = nullptr;
-    }
-    
-    // QPair should already be created in start() function
     if (!ctx->qpair) {
         return;
     }
     
     ctx->running = true;
     
-    // Poll QPair directly without SPDK thread polling
-    // This is a workaround - we poll the QPair completion queue directly
     int consecutive_errors = 0;
-    const int max_consecutive_errors = 10; // Allow some transient errors
-    int submission_count = 0;
-    int reconnect_attempts = 0;  // Per-thread reconnection counter
+    const int max_consecutive_errors = 10;
+    int reconnect_attempts = 0;
     const int max_reconnect_attempts = 10;
-    const int reconnect_delay_ms = 5000;  // 5 seconds between attempts
     
-    // Keep-alive: periodically poll admin queue to handle keep-alive commands
-    auto last_admin_poll = std::chrono::steady_clock::now();
-    const auto admin_poll_interval = std::chrono::milliseconds(1000); // Poll admin every 1 second
+    // Admin poll timing - less frequent to reduce overhead
+    uint64_t last_admin_poll_ns = HighResTimer::now_ns();
+    const uint64_t admin_poll_interval_ns = 1000000000ULL; // 1 second
     
-    while (!ctx->should_stop.load()) {
-        // Poll SPDK thread if using SPDK threads
+    // Adaptive backoff for CPU usage optimization:
+    // - During active I/O: tight polling loop for lowest latency
+    // - After 1000 consecutive idle cycles: brief 1μs sleep to reduce CPU usage
+    // This balances between responsive I/O and reasonable CPU consumption when
+    // the workload is temporarily idle (e.g., waiting for completions).
+    // Note: This is intentionally more aggressive than a fixed usleep(100) as
+    // we want to maintain high IOPS during burst workloads.
+    int idle_cycles = 0;
+    
+    while (!ctx->should_stop.load(std::memory_order_relaxed)) {
+        // Poll SPDK thread if enabled
         if (use_spdk_threads && ctx->spdk_thread) {
             spdk_thread_poll(ctx->spdk_thread, 0, 0);
         }
         
-        // Poll admin queue for keep-alive (required by NVMe-oF)
-        // Each thread polls the admin queue of its assigned controller
-        auto now = std::chrono::steady_clock::now();
-        if (now - last_admin_poll >= admin_poll_interval) {
+        // Admin poll - only check time occasionally
+        uint64_t now_ns = HighResTimer::now_ns();
+        if (now_ns - last_admin_poll_ns >= admin_poll_interval_ns) {
             struct spdk_nvme_ctrlr* ctrlr = ctx->spdk_ctx->get_ctrlr(ctx->ctrlr_index);
             if (ctrlr) {
                 spdk_nvme_ctrlr_process_admin_completions(ctrlr);
             }
-            last_admin_poll = now;
-        }
-        // Submit I/O if we have capacity and QPair is still valid
-        if (ctx->qpair) {
-            // Limit initial submissions to 1 to debug the disconnect issue
-            // Once we confirm it works, we can remove this limit
-            int max_initial_submissions = (submission_count == 0) ? 1 : ctx->target_iodepth;
-            
-            while (ctx->outstanding_io.load() < max_initial_submissions) {
-                if (submit_next_io(ctx) == 0) {
-                    break;  // No more I/O to submit
-                }
-                submission_count++;
-            }
+            last_admin_poll_ns = now_ns;
         }
         
-        // Poll for completions directly on the QPair
         if (ctx->qpair) {
+            // OPTIMIZED: Batch submit multiple operations
+            int submitted = 0;
+            uint32_t outstanding = ctx->outstanding_io.load(std::memory_order_relaxed);
+            while (outstanding < ctx->target_iodepth && submitted < 32) {
+                if (submit_next_io_pooled(ctx) == 0) {
+                    break;
+                }
+                submitted++;
+                outstanding = ctx->outstanding_io.load(std::memory_order_relaxed);
+            }
+            
+            // Process completions - process all available
             int num_completions = spdk_nvme_qpair_process_completions(ctx->qpair, 0);
+            
             if (num_completions < 0) {
                 consecutive_errors++;
                 if (consecutive_errors >= max_consecutive_errors) {
@@ -383,12 +332,29 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                 }
             } else {
                 consecutive_errors = 0;
+                
+                // Adaptive backoff - only sleep if truly idle
+                // This trades off higher CPU usage for lower latency:
+                // - No sleep during active I/O = minimal latency overhead
+                // - 1μs sleep after 1000 idle polls = ~1ms of CPU idle time
+                // For CPU-bound scenarios, consider increasing idle threshold
+                // or sleep duration via a runtime parameter
+                if (num_completions == 0 && submitted == 0) {
+                    idle_cycles++;
+                    if (idle_cycles > 1000) {
+                        // Only sleep after prolonged idleness (prevents CPU spin)
+                        usleep(1);
+                        idle_cycles = 0;
+                    }
+                } else {
+                    idle_cycles = 0;
+                }
             }
         } else {
-            // QPair is disconnected - attempt to reconnect
+            // QPair disconnected - attempt reconnect
             if (reconnect_attempts < max_reconnect_attempts) {
                 reconnect_attempts++;
-                usleep(reconnect_delay_ms * 1000);
+                usleep(5000000); // 5 seconds
                 
                 struct spdk_nvme_qpair* new_qpair = reconnect_qpair(ctx, ctx->target_iodepth, ctx->ctrlr_index);
                 if (new_qpair) {
@@ -400,30 +366,24 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                 usleep(1000);
             }
         }
-        
-        // Small sleep to avoid 100% CPU (not ideal but works for sanity test)
-        usleep(100);
     }
     
-    // Wait for outstanding I/O to complete (if QPair is still valid)
+    // Drain outstanding I/O
     if (ctx->qpair) {
-        while (ctx->outstanding_io.load() > 0) {
-            // Poll SPDK thread if using SPDK threads
+        int drain_cycles = 0;
+        while (ctx->outstanding_io.load(std::memory_order_relaxed) > 0 && drain_cycles < 10000) {
             if (use_spdk_threads && ctx->spdk_thread) {
                 spdk_thread_poll(ctx->spdk_thread, 0, 0);
             }
             spdk_nvme_qpair_process_completions(ctx->qpair, 0);
             usleep(100);
+            drain_cycles++;
         }
-    } else {
-        // QPair disconnected - just wait a bit for any pending operations
-        usleep(1000);
     }
     
-    // Cleanup SPDK thread if used
+    // Cleanup SPDK thread
     if (use_spdk_threads && ctx->spdk_thread) {
         spdk_thread_exit(ctx->spdk_thread);
-        // Poll until thread has exited
         while (!spdk_thread_is_exited(ctx->spdk_thread)) {
             spdk_thread_poll(ctx->spdk_thread, 0, 0);
             usleep(100);
@@ -432,8 +392,6 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
         ctx->spdk_thread = nullptr;
     }
     
-    // Cleanup - don't delete QPair here as it's shared across threads
-    // It will be cleaned up in wait() after all threads finish
     ctx->qpair = nullptr;
     ctx->running = false;
 }
@@ -508,6 +466,17 @@ int PollThreadManager::start() {
         ctx->stats = stats_;
         ctx->should_stop = false;
         ctx->spdk_thread = nullptr;
+        ctx->deferred_count = 0;
+        
+        // Initialize per-thread operation pool
+        // Pool size = 2x target depth to handle burst + deferred ops
+        ctx->op_pool = new OperationPool();
+        if (ctx->op_pool->init(per_thread_depth * 2, generator_->max_ranges_) != 0) {
+            std::cerr << "Error: Failed to initialize operation pool for thread " << i << std::endl;
+            delete ctx->op_pool;
+            ctx->op_pool = nullptr;
+            return -1;
+        }
         
         // Try to create QPair on each controller (round-robin with fallback)
         bool qpair_created = false;
@@ -624,7 +593,7 @@ void PollThreadManager::wait() {
         }
     }
     
-    // Cleanup each thread's QPair
+    // Cleanup each thread's resources
     {
         std::lock_guard<std::mutex> lock(qpair_mutex_);
         for (auto& ctx : threads_) {
@@ -632,8 +601,13 @@ void PollThreadManager::wait() {
                 spdk_ctx_->delete_qpair(ctx->qpair);
                 ctx->qpair = nullptr;
             }
+            // Cleanup operation pool
+            if (ctx->op_pool) {
+                delete ctx->op_pool;
+                ctx->op_pool = nullptr;
+            }
         }
-        shared_qpair_ = nullptr; // Clear legacy shared reference
+        shared_qpair_ = nullptr;
     }
 }
 

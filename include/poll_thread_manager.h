@@ -16,6 +16,7 @@
 #include "statistics.h"
 #include "error_handler.h"
 #include "high_res_timer.h"
+#include "operation_pool.h"
 
 namespace xload {
 
@@ -43,8 +44,11 @@ struct PollThreadContext {
     std::atomic<bool> running;
     std::atomic<bool> should_stop;
     
-    // Deferred submissions (for backpressure)
-    std::vector<XcopyOperation> deferred_ops;
+    // Pre-allocated operation pool (per-thread for lock-free access)
+    OperationPool* op_pool;
+    
+    // Deferred count (for backpressure tracking)
+    std::atomic<uint32_t> deferred_count;
     
     PollThreadContext();
 };
@@ -91,14 +95,14 @@ private:
     // SPDK thread poller function
     static int poller_func(void* arg);
     
-    // XCOPY completion callback
-    static void xcopy_complete_cb(void* arg, const struct spdk_nvme_cpl* cpl);
+    // XCOPY completion callback (for pooled operations)
+    static void xcopy_complete_cb_pooled(void* arg, const struct spdk_nvme_cpl* cpl);
     
-    // Submit next I/O operation
-    static int submit_next_io(PollThreadContext* ctx);
+    // Submit next I/O operation using pool
+    static int submit_next_io_pooled(PollThreadContext* ctx);
     
     // Handle backpressure
-    static void handle_backpressure(PollThreadContext* ctx, const XcopyOperation& op);
+    static void handle_backpressure_pooled(PollThreadContext* ctx);
     
     // Reconnect qpair (called when disconnection is detected)
     static struct spdk_nvme_qpair* reconnect_qpair(PollThreadContext* ctx, uint32_t qpair_depth, size_t ctrlr_index);

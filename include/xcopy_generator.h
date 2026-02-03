@@ -39,17 +39,22 @@ public:
                    uint32_t dst_nsid,
                    const std::vector<const struct spdk_nvme_ns*>& namespaces,
                    bool enable_cross_namespace = false,
-                   bool target_supports_cross_namespace = false);
+                   bool target_supports_cross_namespace = false,
+                   uint32_t fixed_ranges = 0);
     
     // Generate next XCOPY operation with randomized num_ranges
     int generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t range_size);
     
-    // Get random number of ranges (1 to max_ranges)
-    uint32_t get_random_num_ranges() { return range_dist_(rng_); }
+    // Get number of ranges for operation
+    // Returns fixed_ranges_ if set (> 0), otherwise random between 1 and max_ranges_
+    uint32_t get_random_num_ranges() { 
+        return fixed_ranges_ > 0 ? fixed_ranges_ : range_dist_(rng_); 
+    }
     
     uint32_t max_ranges_;
     
 private:
+    uint32_t fixed_ranges_;  // 0 = random (1 to max_ranges_), >0 = fixed count
     std::vector<uint32_t> src_nsids_;
     uint32_t dst_nsid_;
     std::vector<const struct spdk_nvme_ns*> namespaces_;

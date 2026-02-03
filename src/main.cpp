@@ -96,7 +96,8 @@ int main(int argc, char** argv) {
     XcopyGenerator generator(config.max_ranges, config.src_nsids, 
                              config.dst_nsid, namespaces,
                              config.enable_cross_namespace,
-                             target_supports_cross_ns);
+                             target_supports_cross_ns,
+                             config.fixed_ranges);
     
     // Warn if cross-namespace is enabled but target doesn't support it
     if (config.enable_cross_namespace && !target_supports_cross_ns) {
