@@ -26,6 +26,12 @@ public:
         delete[] samples_;
     }
     
+    // Delete copy/move constructors and assignment operators to prevent double-free
+    LockFreeLatencyBuffer(const LockFreeLatencyBuffer&) = delete;
+    LockFreeLatencyBuffer& operator=(const LockFreeLatencyBuffer&) = delete;
+    LockFreeLatencyBuffer(LockFreeLatencyBuffer&&) = delete;
+    LockFreeLatencyBuffer& operator=(LockFreeLatencyBuffer&&) = delete;
+    
     // Lock-free sample recording
     void record(uint64_t latency_ns) {
         size_t idx = write_index_.fetch_add(1, std::memory_order_relaxed) & (BUFFER_SIZE - 1);

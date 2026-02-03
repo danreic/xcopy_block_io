@@ -94,8 +94,10 @@ XcopyGenerator::XcopyGenerator(uint32_t max_ranges,
                                uint32_t dst_nsid,
                                const std::vector<const struct spdk_nvme_ns*>& namespaces,
                                bool enable_cross_namespace,
-                               bool target_supports_cross_namespace)
+                               bool target_supports_cross_namespace,
+                               uint32_t fixed_ranges)
     : max_ranges_(max_ranges)
+    , fixed_ranges_(fixed_ranges)
     , src_nsids_(src_nsids)
     , dst_nsid_(dst_nsid)
     , namespaces_(namespaces)
@@ -144,8 +146,20 @@ int XcopyGenerator::generate(XcopyOperation& op, LbaManager& lba_mgr, uint64_t r
     op.start_time_ns = 0;
     op.user_data = nullptr;
     
-    // For format 0 (same namespace), all ranges use the destination namespace
-    // This is the common case and avoids cross-namespace complexity
+    // Determine source namespace for all ranges in this operation:
+    // - Format 0 (same namespace): All ranges use the destination namespace
+    // - Format 2 (cross-namespace, TP4130): All ranges use the same source namespace
+    //   but different from the destination
+    //
+    // DESIGN NOTE: All ranges within a single XCOPY command use the same source
+    // namespace. This is intentional for two reasons:
+    // 1. NVMe Copy command format 0 requires all source ranges to be from the
+    //    same namespace as the destination
+    // 2. For format 2 (cross-namespace), mixing source namespaces within a single
+    //    command would add significant complexity without clear performance benefit
+    // 
+    // If different-namespace-per-range behavior is needed, it should be implemented
+    // as multiple separate XCOPY commands.
     uint32_t effective_src_nsid = op.dst_nsid;
     if (enable_cross_namespace_ && target_supports_cross_namespace_) {
         effective_src_nsid = get_random_src_nsid();

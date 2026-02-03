@@ -283,7 +283,13 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
     uint64_t last_admin_poll_ns = HighResTimer::now_ns();
     const uint64_t admin_poll_interval_ns = 1000000000ULL; // 1 second
     
-    // Batch counter for adaptive polling
+    // Adaptive backoff for CPU usage optimization:
+    // - During active I/O: tight polling loop for lowest latency
+    // - After 1000 consecutive idle cycles: brief 1μs sleep to reduce CPU usage
+    // This balances between responsive I/O and reasonable CPU consumption when
+    // the workload is temporarily idle (e.g., waiting for completions).
+    // Note: This is intentionally more aggressive than a fixed usleep(100) as
+    // we want to maintain high IOPS during burst workloads.
     int idle_cycles = 0;
     
     while (!ctx->should_stop.load(std::memory_order_relaxed)) {
@@ -328,10 +334,15 @@ void PollThreadManager::thread_func(PollThreadContext* ctx) {
                 consecutive_errors = 0;
                 
                 // Adaptive backoff - only sleep if truly idle
+                // This trades off higher CPU usage for lower latency:
+                // - No sleep during active I/O = minimal latency overhead
+                // - 1μs sleep after 1000 idle polls = ~1ms of CPU idle time
+                // For CPU-bound scenarios, consider increasing idle threshold
+                // or sleep duration via a runtime parameter
                 if (num_completions == 0 && submitted == 0) {
                     idle_cycles++;
                     if (idle_cycles > 1000) {
-                        // Only sleep after prolonged idleness
+                        // Only sleep after prolonged idleness (prevents CPU spin)
                         usleep(1);
                         idle_cycles = 0;
                     }

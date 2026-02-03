@@ -32,6 +32,8 @@ public:
     void reset_dst_lba();
     
     // Set destination LBA range
+    // NOTE: This method is thread-safe but should ideally be called before threads start
+    // or during a pause in I/O generation for predictable behavior
     void set_dst_range(uint64_t start, uint64_t end);
     
     // Get namespace size
@@ -41,9 +43,9 @@ public:
     
 private:
     uint64_t namespace_size_;
-    uint64_t dst_start_;
-    uint64_t dst_end_;
-    std::atomic<uint64_t> dst_current_;  // Lock-free atomic for high performance
+    std::atomic<uint64_t> dst_start_;   // Atomic to allow safe set_dst_range() during operation
+    std::atomic<uint64_t> dst_end_;     // Atomic to allow safe set_dst_range() during operation
+    std::atomic<uint64_t> dst_current_; // Lock-free atomic for high performance
 };
 
 } // namespace xload
